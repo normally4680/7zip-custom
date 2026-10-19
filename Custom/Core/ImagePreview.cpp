@@ -430,11 +430,22 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
           if (se <= 32)
           {
             r.ok = false;
-            wchar_t msg[512];
-            swprintf_s(msg,
-                L"打不开看图程序（ShellExecute 返回 %lld）。\n"
-                L"31 = 这个扩展名没有关联程序；5 = 被拒绝；建议把 .bmp/.png 关联到 Honeyview。",
-                (long long)se);
+            wchar_t msg[768];
+            if (se == 5)
+            {
+              swprintf_s(msg,
+                  L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
+                  L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
+                  L"常见原因：7zFM 是从聊天窗口的文件卡片点开的，或者被安全软件限制。\n"
+                  L"请在【资源管理器】里双击 _out\\x64\\run.bat 再试。");
+            }
+            else
+            {
+              swprintf_s(msg,
+                  L"无法启动看图软件（ShellExecute 返回 %lld）。\n"
+                  L"31 = 没有关联程序；建议把 .bmp/.png 关联到 Honeyview。",
+                  (long long)se);
+            }
             r.error = msg;
           }
         }
@@ -516,12 +527,23 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
     if (se <= 32)
     {
       r.ok = false;
-      wchar_t msg[512];
-      swprintf_s(msg,
-          L"打不开看图程序（ShellExecute 返回 %lld）。\n"
-          L"31 = 这个扩展名没有关联程序；5 = 被拒绝；建议把 .bmp/.png 关联到 Honeyview。",
-          (long long)se);
-      r.error = msg;
+            wchar_t msg[768];
+            if (se == 5)
+            {
+              swprintf_s(msg,
+                  L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
+                  L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
+                  L"常见原因：7zFM 是从聊天窗口的文件卡片点开的，或者被安全软件限制。\n"
+                  L"请在【资源管理器】里双击 _out\\x64\\run.bat 再试。");
+            }
+            else
+            {
+              swprintf_s(msg,
+                  L"无法启动看图软件（ShellExecute 返回 %lld）。\n"
+                  L"31 = 没有关联程序；建议把 .bmp/.png 关联到 Honeyview。",
+                  (long long)se);
+            }
+            r.error = msg;
       return r;
     }
   }

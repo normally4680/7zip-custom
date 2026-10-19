@@ -377,6 +377,36 @@ void ShowDiagnostics(HWND hwnd)
   msg += L"\n密码库  : ";
   msg += custom::VaultDir();
 
+  // 能否启动外部程序（看图要靠它）——受限环境会在这里失败
+  msg += L"\n启动外部程序: ";
+  {
+    wchar_t shell[MAX_PATH] = {};
+    ::GetEnvironmentVariableW(L"COMSPEC", shell, MAX_PATH);
+    std::wstring testCmd = shell;
+    testCmd += L" /c exit";
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi = {};
+    if (!testCmd.empty() &&
+        ::CreateProcessW(nullptr, &testCmd[0], nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                         nullptr, nullptr, &si, &pi))
+    {
+      ::WaitForSingleObject(pi.hProcess, 3000);
+      ::CloseHandle(pi.hThread);
+      ::CloseHandle(pi.hProcess);
+      msg += L"可用";
+    }
+    else
+    {
+      wchar_t eb[64];
+      swprintf_s(eb, L"被拒绝（错误码 %lu）", (unsigned long)::GetLastError());
+      msg += eb;
+    }
+  }
+
   msg += L"\n日志    : ";
   msg += ModuleDir() + L"hook.log（或 %LOCALAPPDATA%\\7zip-custom\\hook.log）";
 
