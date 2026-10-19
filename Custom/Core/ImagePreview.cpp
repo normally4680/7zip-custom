@@ -245,8 +245,18 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 {
   PreviewResult r;
 
+  // 传进来的可能是"归档内完整虚拟路径"（D://x.7z//风景//1.png），也可能是
+  // 仅仅"相对于当前面板目录"的文件名（1.png，7-Zip 的 GetItemRelPath 就是这样）。
+  // 统一成"归档内相对路径"，否则算出来的目标文件路径会和 7z.exe 实际解出的位置不一致。
+  std::wstring inner = innerRelPath;
+  if (inner.size() > archivePath.size() &&
+      _wcsnicmp(inner.c_str(), archivePath.c_str(), archivePath.size()) == 0)
+    inner = inner.substr(archivePath.size());
+  while (!inner.empty() && (inner[0] == L'\\' || inner[0] == L'/'))
+    inner.erase(inner.begin());
+
   std::wstring innerDir, fileName;
-  SplitInnerPath(innerRelPath, innerDir, fileName);
+  SplitInnerPath(inner, innerDir, fileName);
   if (fileName.empty())
   {
     r.error = L"条目名为空";

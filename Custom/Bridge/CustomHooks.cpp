@@ -180,7 +180,10 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(const wchar_t *archivePath
     return 0;
   }
 
-  const int r = fn(nullptr, archivePath, buf, cch);
+  HWND owner = ::GetActiveWindow();
+  if (!owner)
+    owner = ::GetForegroundWindow();
+  const int r = fn(owner, archivePath, buf, cch);
   ::FreeLibrary(h);
   DebugLog(L"AskPassword", r == 1 ? L"ok" : (r < 0 ? L"cancelled" : L"unavailable"));
   return r;

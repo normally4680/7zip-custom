@@ -1508,8 +1508,11 @@ void CPanel::OpenItemInArchive(unsigned index, bool tryInternal, bool tryExterna
     if (!fl.FilePath.IsEmpty())
     {
       const UString arcPath = fs2us(fl.FilePath);
+      // GetItemRelPath() is relative to the *current* panel folder, not to the
+      // archive root, so pass the full virtual path and let the hook strip it.
+      const UString virtPath = _currentFolderPrefix + relPath;
       const wchar_t *pwd = fl.UsePassword ? (const wchar_t *)fl.Password : NULL;
-      if (CustomHook_TryOpenImage(arcPath, relPath, pwd))
+      if (CustomHook_TryOpenImage(arcPath, virtPath, pwd))
         return;
     }
   }

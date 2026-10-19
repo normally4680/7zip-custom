@@ -83,6 +83,39 @@ void SetEyeFont(HWND dlg)
   ::SetDlgItemTextW(dlg, IDC_ASK_EYE, L"\xE890");
 }
 
+void CenterOnOwner(HWND dlg)
+{
+  HWND owner = ::GetParent(dlg);
+  RECT ro = {}, rc = {};
+  ::GetWindowRect(dlg, &rc);
+  const int w = rc.right - rc.left;
+  const int h = rc.bottom - rc.top;
+
+  int x, y;
+  if (owner && ::IsWindow(owner) && ::GetWindowRect(owner, &ro))
+  {
+    x = ro.left + ((ro.right - ro.left) - w) / 2;
+    y = ro.top + ((ro.bottom - ro.top) - h) / 2;
+  }
+  else
+  {
+    RECT wa = {};
+    ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    x = wa.left + ((wa.right - wa.left) - w) / 2;
+    y = wa.top + ((wa.bottom - wa.top) - h) / 2;
+  }
+
+  // 别跑到屏幕外面去
+  RECT wa = {};
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+  if (x < wa.left) x = wa.left;
+  if (y < wa.top) y = wa.top;
+  if (x + w > wa.right) x = wa.right - w;
+  if (y + h > wa.bottom) y = wa.bottom - h;
+
+  ::SetWindowPos(dlg, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 INT_PTR CALLBACK AskProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM)
 {
   switch (msg)
@@ -90,6 +123,7 @@ INT_PTR CALLBACK AskProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM)
     case WM_INITDIALOG:
     {
       ::SetDlgItemTextW(dlg, IDC_ASK_ARC, BaseName(g_archive).c_str());
+      CenterOnOwner(dlg);
       SetEyeFont(dlg);
       FillCombo(dlg);
 
