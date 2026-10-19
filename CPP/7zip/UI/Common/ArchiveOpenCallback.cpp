@@ -400,7 +400,7 @@ Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
     }
 
     // No exact match -> our dialog (vault list + optional "remember this archive").
-    const int askRes = CustomHook_AskPassword(hookPathPtr, pwBuf,
+    const int askRes = CustomHook_AskPassword(NULL, hookPathPtr, pwBuf,
                                              (int)(sizeof(pwBuf) / sizeof(pwBuf[0])));
     if (askRes == 1)
     {

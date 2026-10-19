@@ -64,7 +64,8 @@ HRESULT CUpdateCallbackGUI2::ShowAskPasswordDialog()
       PasswordIsDefined = true;
       return S_OK;
     }
-    const int askRes = CustomHook_AskPasswordForCurrent(pwBuf, cch);
+    HWND progressOwner = *ProgressDialog;   // 让密码框居中在进度窗口上
+    const int askRes = CustomHook_AskPasswordForCurrent((void *)progressOwner, pwBuf, cch);
     if (askRes == 1)
     {
       Password = pwBuf;
