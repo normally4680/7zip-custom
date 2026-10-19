@@ -71,9 +71,32 @@ INT_PTR CALLBACK StubDlgProc(HWND, UINT, WPARAM, LPARAM) { return FALSE; }
 
 } // namespace
 
-int wmain()
+int wmain(int argc, wchar_t **argv)
 {
   ::SetConsoleOutputCP(CP_UTF8);
+
+  // --dump : 读取正在运行的 7zFM 菜单栏（验证注入是否生效）
+  if (argc >= 2 && wcscmp(argv[1], L"--dump") == 0)
+  {
+    HWND h = nullptr;
+    for (int i = 0; i < 40 && !h; ++i)
+    {
+      h = ::FindWindowW(L"7-Zip::FM", nullptr);
+      if (!h)
+        ::Sleep(150);
+    }
+    if (!h)
+    {
+      printf("7zFM window not found\n");
+      return 1;
+    }
+    HMENU m = ::GetMenu(h);
+    const int c = ::GetMenuItemCount(m);
+    printf("top-level: %d\n", c);
+    for (int i = 0; i < c; ++i)
+      printf("  [%d] %s\n", i, Utf8(MenuText(m, i)).c_str());
+    return 0;
+  }
 
   // 造一个和 7zFM 结构近似的菜单：文件 / 编辑 / 查看 / 书签 / 工具 / 帮助
   HMENU main = ::CreateMenu();
