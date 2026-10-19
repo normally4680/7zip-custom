@@ -63,7 +63,8 @@ int wmain(int argc, wchar_t **argv)
     std::vector<std::wstring> exts = { L"bmp", L"png", L"jpg" };
     int count = 0;
     std::wstring err;
-    const bool ok = custom::ExtractImagesInProcess(L"7z.dll", argv[2], L"风景", L"", argv[3],
+    const std::wstring pwd = (argc >= 5) ? argv[4] : L"";
+    const bool ok = custom::ExtractImagesInProcess(L"7z.dll", argv[2], L"风景", pwd, argv[3],
                                                    exts, count, err);
     printf("inproc ok=%d count=%d error=%s\n", (int)ok, count, Utf8(err).c_str());
     return ok ? 0 : 1;
