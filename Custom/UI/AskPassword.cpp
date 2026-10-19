@@ -115,6 +115,47 @@ void AlignProgressOnMain(HWND progress)
   CenterWindowOn(progress, main);
 }
 
+struct FindCtx
+{
+  HWND main;
+  HWND best;
+};
+
+BOOL CALLBACK FindProgressProc(HWND h, LPARAM lp)
+{
+  auto *ctx = reinterpret_cast<FindCtx *>(lp);
+  if (h == ctx->main || !::IsWindowVisible(h))
+    return TRUE;
+
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(h, &pid);
+  if (pid != ::GetCurrentProcessId())
+    return TRUE;
+
+  RECT r = {}, rm = {};
+  if (!::GetWindowRect(h, &r) || !::GetWindowRect(ctx->main, &rm))
+    return TRUE;
+
+  // 进度窗口一定比主窗口小
+  if ((r.right - r.left) < (rm.right - rm.left))
+  {
+    ctx->best = h;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+// 在 7zFM 进程里找出"正在打开/解压"的那个进度窗口
+HWND FindProgressWindow()
+{
+  HWND main = ::FindWindowW(L"7-Zip::FM", nullptr);
+  if (!main)
+    return nullptr;
+  FindCtx ctx = { main, nullptr };
+  ::EnumWindows(FindProgressProc, (LPARAM)&ctx);
+  return ctx.best;
+}
+
 void CenterOnOwner(HWND dlg)
 {
   HWND owner = ::GetParent(dlg);
@@ -260,7 +301,18 @@ int AskPasswordDialog(HINSTANCE inst, HWND owner, const wchar_t *archivePath,
                       std::wstring &outPassword)
 {
   g_inst = inst;
-  AlignProgressOnMain(owner);
+
+  // owner 不是进度窗口时（打开归档这条路径传的是主窗口），自己找一下进度窗口
+  HWND progress = owner;
+  if (!progress || progress == ::FindWindowW(L"7-Zip::FM", nullptr))
+  {
+    HWND found = FindProgressWindow();
+    if (found)
+      progress = found;
+  }
+  AlignProgressOnMain(progress);
+  if (progress)
+    owner = progress;   // 让密码框以进度窗口为参照居中
   g_archive = (archivePath ? archivePath : L"");
   g_result.clear();
   g_resultCode = 0;

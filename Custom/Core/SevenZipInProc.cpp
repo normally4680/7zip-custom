@@ -11,6 +11,7 @@
 #include "SevenZipInProc.h"
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <string>
 #include <vector>
@@ -26,6 +27,52 @@
 namespace custom {
 
 namespace {
+
+// 逐级向上找已存在的祖先，再逐级向下建。
+// 不用 SHCreateDirectoryExW（它在这类环境里对多级路径会莫名返回 PATH_NOT_FOUND）。
+DWORD CreateDirsRecursive(std::wstring path)
+{
+  for (auto &c : path)
+    if (c == L'/')
+      c = L'\\';                       // 正斜杠统一成反斜杠
+
+  while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
+    path.pop_back();
+  if (path.empty())
+    return 0;
+
+  const bool dbg = ::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", nullptr, 0) > 0;
+  if (dbg) fwprintf(stderr, L"[mkdir] start: %s\n", path.c_str());
+
+  std::vector<std::wstring> missing;   // 从右到左
+  std::wstring cur = path;
+  while (true)
+  {
+    const DWORD a = ::GetFileAttributesW(cur.c_str());
+    if (dbg) fwprintf(stderr, L"[mkdir] probe %s -> %lu\n", cur.c_str(), (unsigned long)a);
+    if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY))
+      break;                       // 找到已存在的祖先
+    const size_t pos = cur.find_last_of(L'\\');
+    if (pos == std::wstring::npos || pos < 2)
+      return ERROR_PATH_NOT_FOUND; // 连盘符根都不存在
+    missing.push_back(cur.substr(pos + 1));
+    cur = cur.substr(0, pos);
+  }
+
+  DWORD err = 0;
+  for (auto it = missing.rbegin(); it != missing.rend(); ++it)
+  {
+    cur += L'\\';
+    cur += *it;
+    if (!::CreateDirectoryW(cur.c_str(), nullptr))
+    {
+      const DWORD e = ::GetLastError();
+      if (e != ERROR_ALREADY_EXISTS)
+        err = e;
+    }
+  }
+  return err;
+}
 
 typedef HRESULT(WINAPI *CreateObjectFn)(const GUID *, const GUID *, void **);
 typedef HRESULT(WINAPI *GetNumberOfFormatsFn)(UInt32 *);
@@ -250,6 +297,7 @@ public:
   std::vector<std::wstring> Paths;   // index -> 归档内路径
   int Written = 0;
   DWORD LastWin32 = 0;
+  std::wstring LastPath;
   int StreamCalls = 0;
 
 private:
@@ -292,13 +340,18 @@ Z7_COM7F_IMF(CExtractCallback::GetStream(UInt32 index, ISequentialOutStream **ou
       c = L'\\';
 
   const std::wstring full = OutDir + rel;
-  MakeDirs(full);
+  {
+    const size_t pos = full.find_last_of(L'\\');
+    if (pos != std::wstring::npos)
+      CreateDirsRecursive(full.substr(0, pos));
+  }
 
   CMyComPtr<IOutStream> streamSpec = (IOutStream *)(new COutFileStream);
   COutFileStream *spec = (COutFileStream *)(IOutStream *)streamSpec;
   if (!spec->Create(full))
   {
     LastWin32 = ::GetLastError();
+    LastPath = full;
     if (::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", nullptr, 0) > 0)
       fwprintf(stderr, L"[7z-inproc] create failed: %s (err=%lu)\n", full.c_str(), LastWin32);
     return E_FAIL;
@@ -524,6 +577,18 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
     return false;
   }
 
+  // 目录必须我们自己建到位（不依赖调用方），否则 err=3
+  {
+    const DWORD de = CreateDirsRecursive(base.substr(0, base.size() - 1));
+    if (de != 0)
+    {
+      wchar_t msg[256];
+      swprintf_s(msg, L"建不了输出目录 (err %lu)", (unsigned long)de);
+      error = msg;
+      return false;
+    }
+  }
+
   CMyComPtr<IArchiveExtractCallback> cb =
       (IArchiveExtractCallback *)(new CExtractCallback);
   CExtractCallback *ecsSpec = (CExtractCallback *)(IArchiveExtractCallback *)cb;
@@ -534,10 +599,18 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
   if (res != S_OK)
   {
     wchar_t msg[128];
-    swprintf_s(msg, L"解压失败 (0x%08X, 写出 %d, GetStream %d, err %lu)",
-               (unsigned)res, ecsSpec->Written, ecsSpec->StreamCalls,
-               (unsigned long)ecsSpec->LastWin32);
-    error = msg;
+    error = L"解压失败 0x";
+    wchar_t hb[16]; swprintf_s(hb, L"%08X", (unsigned)res);
+    error += hb;
+    if (!ecsSpec->LastPath.empty())
+    {
+      error += L"，写文件失败：";
+      error += ecsSpec->LastPath;
+      wchar_t eb[16]; swprintf_s(eb, L"%lu", (unsigned long)ecsSpec->LastWin32);
+      error += L" (err ";
+      error += eb;
+      error += L")";
+    }
     return false;
   }
 
