@@ -33,14 +33,15 @@ CFLAGS = /nologo /c /MTd /GS- /EHsc /Zc:wchar_t /Od /Zi /W3 /utf-8 /DUNICODE /D_
 LIB_OBJS = \
   $(O)\CustomHooks.obj \
   $(O)\VaultCrypto.obj \
-  $(O)\PasswordVault.obj
+  $(O)\PasswordVault.obj \
+  $(O)\ImagePreview.obj
 
 APP_OBJS = $(O)\VaultApp.obj $(O)\VaultDialog.obj
 APP_RES  = $(O)\Vault.res
 
 DLL_OBJS = $(O)\VaultUiExports.obj $(O)\VaultDialog.obj
 
-all: lib app dll test probe
+all: lib app dll test probe previewtest
 
 lib: $(O)\Custom.lib
 
@@ -51,6 +52,8 @@ dll: $(OUTDIR)\7zVaultUi.dll
 test: $(OUTDIR)\VaultTest.exe
 
 probe: $(OUTDIR)\UiProbe.exe
+
+previewtest: $(OUTDIR)\PreviewTest.exe
 
 # ------------------------------------------------------------- static lib
 
@@ -65,6 +68,10 @@ $(O)\CustomHooks.obj: Bridge\CustomHooks.cpp Bridge\CustomHooks.h Core\PasswordV
 $(O)\VaultCrypto.obj: Core\VaultCrypto.cpp Core\VaultCrypto.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\VaultCrypto.obj Core\VaultCrypto.cpp
+
+$(O)\ImagePreview.obj: Core\ImagePreview.cpp Core\ImagePreview.h
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\ImagePreview.obj Core\ImagePreview.cpp
 
 $(O)\PasswordVault.obj: Core\PasswordVault.cpp Core\PasswordVault.h Core\VaultCrypto.h
 	@if not exist "$(O)" mkdir "$(O)"
@@ -114,6 +121,15 @@ $(OUTDIR)\UiProbe.exe: $(O)\UiProbe.obj $(O)\Custom.lib
 	  $(O)\Custom.lib user32.lib gdi32.lib comctl32.lib shell32.lib ole32.lib \
 	  bcrypt.lib crypt32.lib
 
+$(O)\PreviewTest.obj: Tests\PreviewTest.cpp Core\ImagePreview.h
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\PreviewTest.obj Tests\PreviewTest.cpp
+
+$(OUTDIR)\PreviewTest.exe: $(O)\PreviewTest.obj $(O)\Custom.lib
+	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
+	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\PreviewTest.obj \
+	  $(O)\Custom.lib user32.lib shell32.lib ole32.lib bcrypt.lib crypt32.lib
+
 $(OUTDIR)\VaultTest.exe: $(O)\VaultTest.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\VaultTest.obj \
@@ -125,3 +141,4 @@ clean:
 	@if exist "$(OUTDIR)\7zVaultUi.dll" del /q "$(OUTDIR)\7zVaultUi.dll"
 	@if exist "$(OUTDIR)\VaultTest.exe" del /q "$(OUTDIR)\VaultTest.exe"
 	@if exist "$(OUTDIR)\UiProbe.exe" del /q "$(OUTDIR)\UiProbe.exe"
+	@if exist "$(OUTDIR)\PreviewTest.exe" del /q "$(OUTDIR)\PreviewTest.exe"

@@ -45,8 +45,10 @@ void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *archivePath,
 //   itemRelPath : 条目在归档内的相对路径（用 / 分隔）
 // 返回 1 = 外挂模块已接管（自己解压 + 自己调起看图程序），上游直接 return
 // 返回 0 = 不接管，走 7-Zip 原有单文件解压流程
+// password 可以是 NULL（归档未加密，或拿不到密码）
 int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
-                                            const wchar_t *itemRelPath);
+                                            const wchar_t *itemRelPath,
+                                            const wchar_t *password);
 
 // 文件管理器主窗口菜单：7zFM 每次重建菜单后调用，可重复调用（内部会去重）。
 // 在菜单栏"帮助"之前插入"密码库(&P)"。返回 1 = 已挂载。
