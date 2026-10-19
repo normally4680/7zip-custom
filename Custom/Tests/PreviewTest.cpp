@@ -4,6 +4,7 @@
 // 用法：PreviewTest.exe <归档路径> <归档内相对路径> [密码]
 
 #include "../Core/ImagePreview.h"
+#include "../Core/SevenZipInProc.h"
 
 // 直接调用 hook 层，验证"密码为空时自动查库"这条链路
 extern "C" int __cdecl CustomHook_TryOpenImage(const wchar_t *archivePath,
@@ -55,6 +56,17 @@ int wmain(int argc, wchar_t **argv)
   {
     printf("usage: PreviewTest.exe <archive> <inner-path> [password]\n");
     return 2;
+  }
+
+  if (wcscmp(argv[1], L"--inproc") == 0 && argc >= 4)
+  {
+    std::vector<std::wstring> exts = { L"bmp", L"png", L"jpg" };
+    int count = 0;
+    std::wstring err;
+    const bool ok = custom::ExtractImagesInProcess(L"7z.dll", argv[2], L"风景", L"", argv[3],
+                                                   exts, count, err);
+    printf("inproc ok=%d count=%d error=%s\n", (int)ok, count, Utf8(err).c_str());
+    return ok ? 0 : 1;
   }
 
   const bool viaHook = (wcscmp(argv[1], L"--via-hook") == 0);
