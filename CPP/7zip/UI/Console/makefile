@@ -3,7 +3,7 @@ CFLAGS = $(CFLAGS)  \
   -DZ7_EXTERNAL_CODECS \
 
 # 7zip-custom: external module (password vault)
-LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib
+LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib comctl32.lib
 
 COMMON_OBJS = \
   $O\CommandLineParser.obj \

@@ -10,6 +10,8 @@
 #endif
 
 #include <windows.h>
+#include <commctrl.h>
+#include <shellapi.h>
 
 #include <string>
 
@@ -119,6 +121,143 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   (void)itemRelPath;
   // feature/image-preview 分支在这里接入
   return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 7zFM 主窗口菜单注入
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 命令 ID 选在 0x7A00 段，远离 7-Zip 自己的 IDM_* 区间
+enum
+{
+  kCmdVaultManager = 0x7A01,
+  kCmdVaultAdd     = 0x7A02,
+  kCmdVaultFolder  = 0x7A03
+};
+
+const UINT_PTR kSubclassId = 0x7A99;
+
+std::wstring ModuleDir()
+{
+  wchar_t buf[MAX_PATH * 2];
+  const DWORD n = ::GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if (n == 0 || n >= sizeof(buf) / sizeof(buf[0]))
+    return std::wstring();
+  std::wstring p(buf, n);
+  const size_t pos = p.find_last_of(L"\\/");
+  if (pos == std::wstring::npos)
+    return std::wstring();
+  return p.substr(0, pos + 1);
+}
+
+bool MenuHasVault(HMENU main)
+{
+  const int count = ::GetMenuItemCount(main);
+  for (int i = 0; i < count; ++i)
+  {
+    HMENU sub = ::GetSubMenu(main, i);
+    if (sub && ::GetMenuState(sub, kCmdVaultManager, MF_BYCOMMAND) != (UINT)-1)
+      return true;
+  }
+  return false;
+}
+
+void ShowVaultUi(HWND hwnd, int mode)
+{
+  const std::wstring dll = ModuleDir() + L"7zVaultUi.dll";
+  HMODULE h = ::LoadLibraryW(dll.c_str());
+  if (!h)
+  {
+    ::MessageBoxW(hwnd,
+        L"找不到 7zVaultUi.dll。\n请确认它和 7zFM.exe 放在同一个目录。",
+        L"密码库", MB_ICONERROR);
+    return;
+  }
+
+  typedef int (__cdecl *ShowFn)(void *, int, const wchar_t *);
+  ShowFn fn = (ShowFn)::GetProcAddress(h, "CustomUi_ShowVault");
+  if (!fn)
+  {
+    ::FreeLibrary(h);
+    ::MessageBoxW(hwnd, L"7zVaultUi.dll 已损坏（缺少导出函数）。", L"密码库", MB_ICONERROR);
+    return;
+  }
+
+  fn(hwnd, mode, nullptr);
+  ::FreeLibrary(h);
+}
+
+void OnVaultCommand(HWND hwnd, unsigned cmd)
+{
+  switch (cmd)
+  {
+    case kCmdVaultManager: ShowVaultUi(hwnd, 0); break;
+    case kCmdVaultAdd:     ShowVaultUi(hwnd, 1); break;
+    case kCmdVaultFolder:
+    {
+      const std::wstring dir = custom::VaultDir();
+      if (!dir.empty())
+        ::ShellExecuteW(hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      break;
+    }
+  }
+}
+
+LRESULT CALLBACK MainWndSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                 UINT_PTR id, DWORD_PTR)
+{
+  if (msg == WM_COMMAND)
+  {
+    const unsigned cmd = LOWORD(wp);
+    if (cmd >= kCmdVaultManager && cmd <= kCmdVaultFolder)
+    {
+      OnVaultCommand(hwnd, cmd);
+      return 0;
+    }
+  }
+  return ::DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+} // namespace
+
+extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
+{
+  HWND hwnd = (HWND)hWnd;
+  if (!hwnd || !::IsWindow(hwnd))
+    return 0;
+
+  HMENU main = ::GetMenu(hwnd);
+  if (!main)
+    return 0;
+
+  // 菜单重建后会被重新调用：已经有就不重复插入
+  if (!MenuHasVault(main))
+  {
+    HMENU sub = ::CreatePopupMenu();
+    if (!sub)
+      return 0;
+
+    ::AppendMenuW(sub, MF_STRING, kCmdVaultManager, L"管理密码库(&M)...");
+    ::AppendMenuW(sub, MF_STRING, kCmdVaultAdd,     L"新增密码条目(&A)...");
+    ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(sub, MF_STRING, kCmdVaultFolder,  L"打开密码库存放目录");
+
+    const int count = ::GetMenuItemCount(main);
+    // 插在"帮助"之前；插到末尾会影响 7-Zip 自己的菜单索引
+    const int pos = (count > 0) ? count - 1 : 0;
+    if (!::InsertMenuW(main, (UINT)pos, MF_BYPOSITION | MF_POPUP, (UINT_PTR)sub, L"密码库(&P)"))
+    {
+      ::DestroyMenu(sub);
+      return 0;
+    }
+    ::DrawMenuBar(hwnd);
+  }
+
+  ::SetWindowSubclass(hwnd, MainWndSubclass, kSubclassId, 0);
+  DebugLog(L"AttachMainMenu", L"ok");
+  return 1;
 }
 
 extern "C" void CUSTOM_HOOK_API CustomHook_OnArchiveOpened(const wchar_t *archivePath)

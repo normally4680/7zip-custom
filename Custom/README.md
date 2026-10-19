@@ -13,13 +13,17 @@ Custom/
 ├── Core/                   纯逻辑，不依赖 7-Zip 任何类型
 │   ├── VaultCrypto.*       AES-256-GCM（BCrypt）+ DPAPI
 │   └── PasswordVault.*     加密密码库的读写与匹配
-├── UI/                     独立 UI 层
-│   ├── VaultApp.cpp        密码库管理器主程序
+├── UI/                     独立 UI 层（一份代码，两个宿主）
+│   ├── VaultDialog.*       对话框逻辑（核心）
+│   ├── VaultApp.cpp        宿主①：7zVault.exe 独立管理器
+│   ├── VaultUiExports.cpp  宿主②：7zVaultUi.dll，被 7zFM 进程内调用
 │   ├── Vault.rc            我们自己的资源，完全不碰 7-Zip 的 .rc
 │   └── resource.h
+├── lang/zh-cn.txt          官方简体中文语言包（从 26.04 安装包提取）
 ├── Tests/
-│   └── VaultTest.cpp       无界面自测（22 项断言）
-└── makefile                Custom.lib / 7zVault.exe / VaultTest.exe
+│   ├── VaultTest.cpp       密码库自测（22 项断言）
+│   └── UiProbe.cpp         菜单注入自测（6 项断言）
+└── makefile                Custom.lib / 7zVault.exe / 7zVaultUi.dll / 测试
 ```
 
 ## 二、为什么要这么分层
@@ -37,12 +41,13 @@ Custom/
 2. 7-Zip 进程里不出现我们的窗口代码，出问题也不会拖垮解压
 3. 可以单独编译、单独调试、单独发布
 
-## 三、上游到底被改了什么（4 个文件，共 4 处）
+## 三、上游到底被改了什么（6 个文件，每处都很小）
 
 | 文件 | 改动 |
 |---|---|
 | `CPP/7zip/UI/Common/ArchiveOpenCallback.cpp` | `COpenCallbackImp::CryptoGetTextPassword` 里加一段：先从库取密码；用户手输了密码则记下来。约 20 行 |
 | `CPP/7zip/UI/FileManager/ExtractCallback.cpp` | `CExtractCallbackImp::CryptoGetTextPassword` 同样的两段（针对"只有数据加密、头没加密"的包） |
+| `CPP/7zip/UI/FileManager/MyLoadMenu.cpp` | 1 个 include + 1 行调用：菜单重建完挂上"密码库" |
 | `CPP/7zip/UI/Console/makefile`<br>`CPP/7zip/UI/GUI/makefile`<br>`CPP/7zip/Bundles/Fm/makefile` | 各 1 行：`LIBS = $(LIBS) ...Custom.lib bcrypt.lib crypt32.lib` |
 
 三个 makefile 都要加，因为 `ArchiveOpenCallback.cpp` 会被 7z.exe / 7zG.exe / 7zFM.exe
@@ -70,7 +75,32 @@ $ Z7CUSTOM_VAULT_DIR=D:\tmp\vault 7z.exe l enc.7z        # 再开一次
 调试时把 `Z7CUSTOM_DEBUG` 设成日志文件路径（或 `1` 写到 `%TEMP%`），
 hook 每次命中/未命中都会记一行，这是排查"到底有没有进我们的代码"最快的办法。
 
-## 五、跨模块 ABI 约定（改 Bridge 前必读）
+## 五、菜单是怎么挂上去的
+
+关键取舍：**不修改 7-Zip 的菜单资源**（`.rc` / `IDM_*` / 语言文件），全部运行时注入。
+
+1. `MyLoadMenu()` 在"For each menu rebuild"结尾调 `CustomHook_AttachMainMenu(g_HWND)`
+2. 我们的实现用 `InsertMenu` 在"帮助"之前插一个弹出菜单，命令 ID 用 `0x7A01..0x7A03`
+   （避开 7-Zip 的 `IDM_*` 区间）
+3. 用 `SetWindowSubclass` 截 `WM_COMMAND`，命中我们的 ID 就自己处理、返回 0
+4. 幂等：插入前先扫一遍菜单，已有"密码库"就跳过 —— 否则切换界面语言时
+   菜单会重建，容易插出两个
+5. 点"管理密码库"时 `LoadLibrary("7zVaultUi.dll")` → 调 `CustomUi_ShowVault`
+   → 用完 `FreeLibrary`
+
+把 UI 做成 DLL 而不是编进 exe，是为了让 `.rc` 只属于我们：7-Zip 的 `.rc` 一行没动，
+上游改资源也不会冲突。
+
+## 六、官方中文
+
+`Custom/lang/zh-cn.txt` 是从官方 **26.04 安装包**里提取的（`Lang\zh-cn.txt`，
+24.05 修订版），构建时 stage 到 `_out\x64\Lang\`。
+
+7-Zip 的加载顺序是：注册表 `HKCU\Software\7-Zip\Lang` → 系统语言自动匹配
+→ 都没有就用内置英文。所以只要放对位置，中文 Windows 上会自动变中文；
+想手动切换：工具 → 选项 → 语言。
+
+## 七、跨模块 ABI 约定（改 Bridge 前必读）
 
 1. **只用 C ABI**，函数显式 `__cdecl`。7-Zip 用 `/Gr`（默认 fastcall），
    不写死调用约定会在链接期"看起来正常、运行期栈错乱"。
@@ -81,7 +111,7 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 编译参数刻意与 7-Zip 对齐：`/MT /GS- /EHsc /Zc:wchar_t`。
 静态 CRT 一致，内存不会跨到另一个堆上。
 
-## 六、密码库设计
+## 八、密码库设计
 
 存储位置：`%LOCALAPPDATA%\7zip-custom\`
 
@@ -100,7 +130,7 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 
 环境变量 `Z7CUSTOM_VAULT_DIR` 可以重定向库目录（便携模式 / 自动化测试用）。
 
-## 七、构建
+## 九、构建
 
 ```bash
 build-msvc.bat            # 全部：Custom.lib + 7z.dll/7z.exe/7zG.exe/7zFM.exe + 7zVault + 测试
@@ -117,7 +147,7 @@ build-msvc.bat 7zfm       # 只编 7zFM.exe
 cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 ```
 
-## 八、踩过的坑（别再踩）
+## 十、踩过的坑（别再踩）
 
 1. **makefile 里不要写中文注释**。nmake 按 ANSI 代码页读 makefile，UTF-8 中文
    会让它把**下一行**吞掉或错位，症状是"某个变量莫名其妙没生效"。
@@ -141,7 +171,7 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 7. **`::ListView_xxx` 不行**。commctrl 的 `ListView_*` 是宏，前面加 `::` 会变成
    `::(BOOL)SNDMSG(...)`，报 `C2589: "(": "::" 右边的非法标记`。
 
-## 九、后续可做
+## 十一、后续可做
 
 - 控制台接入：`CPP/7zip/UI/Console/OpenCallbackConsole.cpp` 的
   `Open_CryptoGetTextPassword`，加上 `Console/makefile` 的 LIBS 一行。
