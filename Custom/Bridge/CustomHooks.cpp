@@ -11,6 +11,7 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <shlobj.h>
 #include <shellapi.h>
 
 #include <string>
@@ -27,17 +28,23 @@ SRWLOCK g_arcLock = SRWLOCK_INIT;
 // 设置环境变量 Z7CUSTOM_DEBUG=1 后，hook 调用会追加到 %TEMP%\7zip-custom.log
 void DebugLog(const wchar_t *stage, const wchar_t *detail)
 {
+  // 默认就写日志（%LOCALAPPDATA%\7zip-custom\hook.log），出问题不用再让用户
+  // 设环境变量跑一遍；Z7CUSTOM_DEBUG 可以覆盖路径，设成 "-" 则关闭。
   static std::wstring logPath;
   static int enabled = -1;
   if (enabled < 0)
   {
     wchar_t v[MAX_PATH * 2];
     const DWORD n = ::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", v, (DWORD)(sizeof(v) / sizeof(v[0])));
-    enabled = (n > 0) ? 1 : 0;
-    if (enabled)
+    if (n == 1 && v[0] == L'-')
     {
-      // 值里带路径分隔符就当成日志文件路径，否则用 %TEMP%
-      logPath = (wcschr(v, L'\\') || wcschr(v, L'/')) ? std::wstring(v) : std::wstring();
+      enabled = 0;
+    }
+    else
+    {
+      enabled = 1;
+      if (n > 1)
+        logPath.assign(v, n);
     }
   }
   if (!enabled)
@@ -46,9 +53,32 @@ void DebugLog(const wchar_t *stage, const wchar_t *detail)
   std::wstring path = logPath;
   if (path.empty())
   {
-    wchar_t tmp[MAX_PATH];
-    ::GetTempPathW(MAX_PATH, tmp);
-    path = std::wstring(tmp) + L"7zip-custom.log";
+    // 不依赖 COM：先用 SHGetFolderPathW 拿 %LOCALAPPDATA%
+    wchar_t local[MAX_PATH] = {};
+    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
+    {
+      std::wstring dir = local;
+      dir += L"\\7zip-custom";
+      ::CreateDirectoryW(dir.c_str(), nullptr);
+      path = dir + L"\\hook.log";
+    }
+    else
+    {
+      wchar_t tmp[MAX_PATH] = {};
+      if (::GetTempPathW(MAX_PATH, tmp) == 0)
+        return;
+      path = std::wstring(tmp) + L"7zip-custom-hook.log";
+    }
+  }
+
+  {
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
+    {
+      const unsigned long long sz = ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+      if (sz > 512u * 1024u)
+        ::DeleteFileW(path.c_str());
+    }
   }
 
   HANDLE h = ::CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
@@ -85,6 +115,19 @@ bool CopyToBuf(const std::wstring &src, wchar_t *buf, int cch)
   return true;
 }
 
+std::wstring ModuleDir()
+{
+  wchar_t buf[MAX_PATH * 2];
+  const DWORD n = ::GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if (n == 0 || n >= sizeof(buf) / sizeof(buf[0]))
+    return std::wstring();
+  std::wstring p(buf, n);
+  const size_t pos = p.find_last_of(L"\\/");
+  if (pos == std::wstring::npos)
+    return std::wstring();
+  return p.substr(0, pos + 1);
+}
+
 } // namespace
 
 extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath,
@@ -111,6 +154,34 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath
   return CopyToBuf(pw, buf, cch) ? 1 : 0;
 }
 
+extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(const wchar_t *archivePath,
+                                                      wchar_t *buf, int cch)
+{
+  if (!archivePath || !*archivePath || !buf || cch <= 0)
+    return 0;
+
+  const std::wstring dll = ModuleDir() + L"7zVaultUi.dll";
+  HMODULE h = ::LoadLibraryW(dll.c_str());
+  if (!h)
+  {
+    DebugLog(L"AskPassword", L"7zVaultUi.dll missing");
+    return 0;
+  }
+
+  typedef int (__cdecl *AskFn)(void *, const wchar_t *, wchar_t *, int);
+  AskFn fn = (AskFn)::GetProcAddress(h, "CustomUi_AskPassword");
+  if (!fn)
+  {
+    ::FreeLibrary(h);
+    return 0;
+  }
+
+  const int r = fn(nullptr, archivePath, buf, cch);
+  ::FreeLibrary(h);
+  DebugLog(L"AskPassword", r == 1 ? L"ok" : (r < 0 ? L"cancelled" : L"unavailable"));
+  return r;
+}
+
 extern "C" void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *archivePath)
 {
   ::AcquireSRWLockExclusive(&g_arcLock);
@@ -128,6 +199,18 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, in
   if (path.empty())
     return 0;
   return CustomHook_TryPassword(path.c_str(), buf, cch);
+}
+
+extern "C" int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(wchar_t *buf, int cch)
+{
+  std::wstring path;
+  ::AcquireSRWLockExclusive(&g_arcLock);
+  path = g_currentArchive;
+  ::ReleaseSRWLockExclusive(&g_arcLock);
+
+  if (path.empty())
+    return 0;
+  return CustomHook_AskPassword(path.c_str(), buf, cch);
 }
 
 extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *archivePath,
@@ -216,19 +299,6 @@ enum
 };
 
 const UINT_PTR kSubclassId = 0x7A99;
-
-std::wstring ModuleDir()
-{
-  wchar_t buf[MAX_PATH * 2];
-  const DWORD n = ::GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
-  if (n == 0 || n >= sizeof(buf) / sizeof(buf[0]))
-    return std::wstring();
-  std::wstring p(buf, n);
-  const size_t pos = p.find_last_of(L"\\/");
-  if (pos == std::wstring::npos)
-    return std::wstring();
-  return p.substr(0, pos + 1);
-}
 
 bool MenuHasVault(HMENU main)
 {

@@ -716,10 +716,7 @@ Z7_COM7F_IMF(CExtractCallbackImp::CryptoGetTextPassword(BSTR *password))
     if (dialog.ShowPassword != showPassword)
       NExtract::Save_ShowPassword(dialog.ShowPassword);
     #endif
-    // ---- 7zip-custom: remember manually entered password ----
-    if (!_currentArchivePath.IsEmpty())
-      CustomHook_OnPasswordAccepted(_currentArchivePath, Password);
-    // ---------------------------------------------------
+
   }
   return StringToBstr(Password, password);
 }

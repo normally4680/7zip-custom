@@ -4,6 +4,7 @@
 
 #define IDD_VAULT           101
 #define IDD_ENTRY           102
+#define IDD_ASKPWD          103
 
 #define IDC_LIST            1001
 #define IDC_ADD             1002
@@ -18,6 +19,13 @@
 #define IDC_E_PASS          1102
 #define IDC_E_NOTE          1103
 #define IDC_E_EYE           1106
+
+#define IDC_ASK_ARC         1201
+#define IDC_ASK_LIST        1202
+#define IDC_ASK_PASS        1203
+#define IDC_ASK_EYE         1204
+#define IDC_ASK_SAVE        1205
+#define IDC_ASK_MANAGE      1206
 #define IDC_E_HINT          1104
 
 #endif

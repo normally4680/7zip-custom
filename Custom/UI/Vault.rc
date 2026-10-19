@@ -49,3 +49,27 @@ BEGIN
     DEFPUSHBUTTON   "确定", IDOK,     112, 95, 50, 14
     PUSHBUTTON      "取消", IDCANCEL, 167, 95, 50, 14
 END
+
+/////////////////////////////////////////////////////////////////////////////
+// 输入密码（替代 7-Zip 自带对话框，多了"从密码库选择"）
+
+IDD_ASKPWD DIALOGEX 0, 0, 264, 128
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "输入密码"
+FONT 9, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "压缩包：", -1, 7, 8, 34, 8
+    LTEXT           "", IDC_ASK_ARC, 42, 8, 215, 8
+    LTEXT           "从密码库选择（可选）：", -1, 7, 24, 160, 8
+    COMBOBOX        IDC_ASK_LIST, 7, 34, 250, 90,
+                    CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "密码：", -1, 7, 56, 40, 8
+    EDITTEXT        IDC_ASK_PASS, 7, 66, 210, 12, ES_PASSWORD | ES_AUTOHSCROLL
+    CONTROL         "", IDC_ASK_EYE, "Button",
+                    BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP, 221, 66, 36, 12
+    CONTROL         "把这个压缩包的密码存进密码库", IDC_ASK_SAVE, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 7, 84, 200, 10
+    PUSHBUTTON      "管理密码库...", IDC_ASK_MANAGE, 7, 104, 72, 14
+    DEFPUSHBUTTON   "确定", IDOK,     152, 104, 50, 14
+    PUSHBUTTON      "取消", IDCANCEL, 207, 104, 50, 14
+END

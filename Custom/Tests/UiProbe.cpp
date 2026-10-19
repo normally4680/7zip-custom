@@ -149,6 +149,19 @@ int wmain()
         Check(::GetDlgItem(dlg, 1106) != nullptr, "密码框右侧的眼睛按钮存在");
         ::DestroyWindow(dlg);
       }
+      // 密码选择对话框
+      HWND ask = ::CreateDialogParamW(h, MAKEINTRESOURCEW(103), nullptr, StubDlgProc, 0);
+      Check(ask != nullptr, "能创建\"输入密码\"对话框");
+      if (ask)
+      {
+        Check(::GetDlgItem(ask, 1202) != nullptr, "密码库下拉列表存在");
+        Check(::GetDlgItem(ask, 1203) != nullptr, "密码输入框存在");
+        Check(::GetDlgItem(ask, 1204) != nullptr, "眼睛按钮存在");
+        Check(::GetDlgItem(ask, 1205) != nullptr, "\"记住这个包\"勾选框存在");
+        ::DestroyWindow(ask);
+      }
+
+      Check(::GetProcAddress(h, "CustomUi_AskPassword") != nullptr, "导出了 CustomUi_AskPassword");
       ::FreeLibrary(h);
     }
   }

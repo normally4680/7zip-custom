@@ -54,15 +54,25 @@ HRESULT CUpdateCallbackGUI2::SetOperation_Base(UInt32 notifyOp, const wchar_t *n
 
 HRESULT CUpdateCallbackGUI2::ShowAskPasswordDialog()
 {
-  // 7zip-custom: try the saved password before asking the user
+  // 7zip-custom: vault match, otherwise our own dialog (vault list + optional save)
   {
     wchar_t pwBuf[256];
-    if (CustomHook_TryPasswordForCurrent(pwBuf, (int)(sizeof(pwBuf) / sizeof(pwBuf[0]))))
+    const int cch = (int)(sizeof(pwBuf) / sizeof(pwBuf[0]));
+    if (CustomHook_TryPasswordForCurrent(pwBuf, cch))
     {
       Password = pwBuf;
       PasswordIsDefined = true;
       return S_OK;
     }
+    const int askRes = CustomHook_AskPasswordForCurrent(pwBuf, cch);
+    if (askRes == 1)
+    {
+      Password = pwBuf;
+      PasswordIsDefined = true;
+      return S_OK;
+    }
+    if (askRes < 0)
+      return E_ABORT;
   }
 
   CPasswordDialog dialog;
