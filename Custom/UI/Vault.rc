@@ -1,0 +1,48 @@
+// Custom/UI/Vault.rc
+// 独立资源文件：完全不碰 7-Zip 自己的 .rc，
+// 上游更新时不会出现资源 ID 冲突 / 行号漂移导致的合并冲突。
+
+#pragma code_page(65001)
+
+#include <windows.h>
+#include "resource.h"
+
+LANGUAGE LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED
+
+/////////////////////////////////////////////////////////////////////////////
+// 主窗口
+
+IDD_VAULT DIALOGEX 0, 0, 300, 190
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "密码库 - 7-Zip Custom"
+FONT 9, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "", IDC_LIST, "SysListView32",
+                    LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
+                    7, 7, 286, 140
+    PUSHBUTTON      "新增(&A)", IDC_ADD,    7, 152, 50, 14
+    PUSHBUTTON      "编辑(&E)", IDC_EDIT,  61, 152, 50, 14
+    PUSHBUTTON      "删除(&D)", IDC_DEL,  115, 152, 50, 14
+    CONTROL         "显示明文", IDC_REVEAL, "Button",
+                    BS_AUTOCHECKBOX | WS_TABSTOP, 172, 154, 60, 10
+    PUSHBUTTON      "关闭",     IDC_CLOSE, 243, 152, 50, 14
+    LTEXT           "", IDC_HINT, 7, 172, 286, 12
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// 新增 / 编辑条目
+
+IDD_ENTRY DIALOGEX 0, 0, 224, 116
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "密码条目"
+FONT 9, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "归档名称（可用 * 和 ? 通配，例如 *.7z）", -1, 7, 7, 210, 8
+    EDITTEXT        IDC_E_NAME, 7, 18, 210, 12, ES_AUTOHSCROLL
+    LTEXT           "密码", -1, 7, 36, 210, 8
+    EDITTEXT        IDC_E_PASS, 7, 47, 210, 12, ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "备注", -1, 7, 65, 210, 8
+    EDITTEXT        IDC_E_NOTE, 7, 76, 210, 12, ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "确定", IDOK,     112, 95, 50, 14
+    PUSHBUTTON      "取消", IDCANCEL, 167, 95, 50, 14
+END

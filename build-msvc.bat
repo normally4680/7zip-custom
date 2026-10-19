@@ -49,10 +49,13 @@ echo [ENV] Windows SDK patched manually: !SDKV!
 :sdk_ok
 
 echo [ENV] MSVC %VCToolsVersion%  Arch=%VSCMD_ARG_TGT_ARCH%  SDK=%WindowsSDKVersion%
+echo [ENV] LIB=%LIB%
 echo.
 
 if /i "%~1"=="clean" goto :clean
-if "%~1"=="" ( set "LIST=7zdll 7z 7zg 7zfm" ) else ( set "LIST=%*" )
+if "%~1"=="" ( set "LIST=custom 7zdll 7z 7zg 7zfm vault" ) else (
+    if /i "%~1"=="custom" ( set "LIST=%*" ) else ( set "LIST=custom %*" )
+)
 
 set "FAILED="
 for %%T in (%LIST%) do call :build %%T
@@ -76,17 +79,27 @@ exit /b 0
 :build
 set "NAME="
 set "DIR="
-if /i "%~1"=="7z"    ( set "NAME=7z.exe"   & set "DIR=CPP\7zip\UI\Console" )
-if /i "%~1"=="7zg"   ( set "NAME=7zG.exe"  & set "DIR=CPP\7zip\UI\GUI" )
-if /i "%~1"=="7zdll" ( set "NAME=7z.dll"   & set "DIR=CPP\7zip\Bundles\Format7zF" )
-if /i "%~1"=="7zfm"  ( set "NAME=7zFM.exe" & set "DIR=CPP\7zip\Bundles\Fm" )
-if /i "%~1"=="7za"   ( set "NAME=7za.exe"  & set "DIR=CPP\7zip\Bundles\Alone" )
-if /i "%~1"=="7zz"   ( set "NAME=7zz.exe"  & set "DIR=CPP\7zip\Bundles\Alone2" )
+set "MK="
+if /i "%~1"=="7z"     ( set "NAME=7z.exe"      & set "DIR=CPP\7zip\UI\Console" )
+if /i "%~1"=="7zg"    ( set "NAME=7zG.exe"     & set "DIR=CPP\7zip\UI\GUI" )
+if /i "%~1"=="7zdll"  ( set "NAME=7z.dll"      & set "DIR=CPP\7zip\Bundles\Format7zF" )
+if /i "%~1"=="7zfm"   ( set "NAME=7zFM.exe"    & set "DIR=CPP\7zip\Bundles\Fm" )
+if /i "%~1"=="7za"    ( set "NAME=7za.exe"     & set "DIR=CPP\7zip\Bundles\Alone" )
+if /i "%~1"=="7zz"    ( set "NAME=7zz.exe"     & set "DIR=CPP\7zip\Bundles\Alone2" )
+if /i "%~1"=="custom" ( set "NAME=Custom.lib"  & set "DIR=Custom" & set "MK=lib" )
+if /i "%~1"=="vault"  ( set "NAME=7zVault.exe" & set "DIR=Custom" & set "MK=all" )
 if not defined NAME ( echo [SKIP] unknown target: %~1 & exit /b 0 )
 
 echo ===== build %NAME%  (%DIR%) =====
+REM Force relink: nmake does not track Custom.lib as a link dependency,
+REM so a changed overlay lib would otherwise be ignored.
+if not defined MK if exist "%~dp0%DIR%\x64\%NAME%" del /q "%~dp0%DIR%\x64\%NAME%"
 pushd "%~dp0%DIR%"
-nmake /nologo NEW_COMPILER=1 MY_STATIC_LINK=1
+if defined MK (
+    nmake /nologo !MK!
+) else (
+    nmake /nologo NEW_COMPILER=1 MY_STATIC_LINK=1
+)
 set "RC=!ERRORLEVEL!"
 popd
 if not "!RC!"=="0" (
