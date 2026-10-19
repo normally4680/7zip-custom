@@ -287,6 +287,10 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   {
     std::wstring msg = L"预览这张图片失败：\n\n";
     msg += r.error.empty() ? L"(未知原因)" : r.error;
+    if (!r.inprocError.empty())
+      msg += L"\n\n（进程内解压失败原因：";
+      msg += r.inprocError;
+      msg += L"）";
     if (!r.command.empty())
     {
       msg += L"\n\n执行的命令：\n";
