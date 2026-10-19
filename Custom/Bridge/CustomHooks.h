@@ -50,6 +50,11 @@ int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
                                             const wchar_t *itemRelPath,
                                             const wchar_t *password);
 
+// 7zG（独立的解压/压缩进程）用：在开始处理前记录当前归档路径，
+// 之后它的密码框就能查密码库。传 NULL 表示清空。
+void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *archivePath);
+int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, int cch);
+
 // 文件管理器主窗口菜单：7zFM 每次重建菜单后调用，可重复调用（内部会去重）。
 // 在菜单栏"帮助"之前插入"密码库(&P)"。返回 1 = 已挂载。
 // hWnd 用 void* 传，保持这个头文件不依赖 windows.h。

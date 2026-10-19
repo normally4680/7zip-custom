@@ -17,6 +17,10 @@ if exist "%~dp07z.exe"        (echo [ok] 7z.exe)          else (echo [MISSING] 7
 if exist "%~dp07z.dll"        (echo [ok] 7z.dll)          else (echo [MISSING] 7z.dll)
 if exist "%~dp07zVaultUi.dll" (echo [ok] 7zVaultUi.dll)   else (echo [MISSING] 7zVaultUi.dll)
 
+echo === 7z.exe 能否被启动 ===
+start /wait "" "%~dp07z.exe" i >nul 2>&1
+echo [7z.exe exit code] %ERRORLEVEL%  ^(0=ok^)
+
 echo.
 echo === 临时目录写入检查 ===
 echo TEMP=%TEMP%
@@ -41,6 +45,10 @@ if exist "%Z7CUSTOM_DEBUG%" (
     echo 没有日志 -> hook 没被调用，或者 7zFM 不是从本目录启动的
 )
 echo.
+echo === MOTW check ===
+powershell -NoProfile -Command "Get-ChildItem -Path '%~dp0' -File | ForEach-Object { if (Get-Item $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) { 'MOTW: ' + $_.Name } }"
+echo ^(empty = no MOTW^)
+
 echo === 预览目录 ===
 if exist "%TEMP%\7zip-custom\preview" dir /b "%TEMP%\7zip-custom\preview"
 echo.

@@ -26,6 +26,9 @@
 
 #include "ExtractDialog.h"
 #include "ExtractGUI.h"
+
+// 7zip-custom: password vault hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
 #include "HashGUI.h"
 
 #include "../FileManager/PropertyNameRes.h"
@@ -182,6 +185,11 @@ HRESULT ExtractGUI(
     HWND hwndParent)
 {
   messageWasDisplayed = false;
+
+  // 7zip-custom: remember the archive this run handles.
+  // The password dialog (CUpdateCallbackGUI2) runs on another object that has
+  // no access to these paths, so we stash it here for the vault lookup.
+  CustomHook_SetCurrentArchive(archivePaths.IsEmpty() ? NULL : (const wchar_t *)archivePaths[0]);
 
   CThreadExtracting extracter;
   /*
