@@ -421,7 +421,7 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
         }
         return r;
       }
-      r.error = ipError;   // 保留，万一子进程也失败就用它
+      r.inprocError = ipError;   // 保留，万一子进程也失败就用它
     }
 
     std::wstring cmd = L"\"" + ModuleDir() + L"7z.exe\" x \"" + archivePath + L"\" -o\"" + dir +
