@@ -1,0 +1,33 @@
+# ---- Visual Studio ----
+.vs/
+*.VC.db
+*.VC.opendb
+*.suo
+*.user
+*.aps
+*.ncb
+*.sdf
+*.opensdf
+*.ipch
+ipch/
+*.log
+
+# ---- 7-Zip 构建产物 (nmake 会在各 bundle 下生成 x64/ 与 b/) ----
+x64/
+_o/
+b/
+_out/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.res
+*.idb
+
+# 注意: 不要忽略 *.dll / *.exe 之外的源码目录；
+# 上游仓库自带一些预编译的 .dll/.exe 资源，如需忽略请显式指定路径。
+
+# ---- 编辑器 ----
+.vscode/
+*.swp
