@@ -9,6 +9,9 @@
 
 #include "../../PropID.h"
 
+// 7zip-custom: external menu hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
+
 #include "../Common/CompressCall.h"
 
 #include "AboutDialog.h"
@@ -380,6 +383,11 @@ void MyLoadMenu(bool needResetMenu)
     g_FileMenu.CreatePopup();
     CopyMenu(::GetSubMenu(baseMenu, k_MenuIndex_File), g_FileMenu);
   }
+
+  #ifndef UNDER_CE
+  // 7zip-custom: append the "Password vault" menu (idempotent, safe on reload)
+  CustomHook_AttachMainMenu(g_HWND);
+  #endif
 }
 
 void OnMenuActivating(HWND /* hWnd */, HMENU hMenu, int position)

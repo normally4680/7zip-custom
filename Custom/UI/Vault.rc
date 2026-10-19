@@ -38,7 +38,8 @@ CAPTION "密码条目"
 FONT 9, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     LTEXT           "归档名称（可用 * 和 ? 通配，例如 *.7z）", -1, 7, 7, 210, 8
-    EDITTEXT        IDC_E_NAME, 7, 18, 210, 12, ES_AUTOHSCROLL
+    EDITTEXT        IDC_E_NAME, 7, 18, 176, 12, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_E_BROWSE, 187, 18, 30, 12
     LTEXT           "密码", -1, 7, 36, 210, 8
     EDITTEXT        IDC_E_PASS, 7, 47, 210, 12, ES_PASSWORD | ES_AUTOHSCROLL
     LTEXT           "备注", -1, 7, 65, 210, 8

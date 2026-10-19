@@ -48,6 +48,11 @@ void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *archivePath,
 int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
                                             const wchar_t *itemRelPath);
 
+// 文件管理器主窗口菜单：7zFM 每次重建菜单后调用，可重复调用（内部会去重）。
+// 在菜单栏"帮助"之前插入"密码库(&P)"。返回 1 = 已挂载。
+// hWnd 用 void* 传，保持这个头文件不依赖 windows.h。
+int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd);
+
 // 归档成功打开后调用（供后续功能挂载，当前为空实现）
 void CUSTOM_HOOK_API CustomHook_OnArchiveOpened(const wchar_t *archivePath);
 
