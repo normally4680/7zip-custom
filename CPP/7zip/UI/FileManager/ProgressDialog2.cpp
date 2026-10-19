@@ -405,6 +405,34 @@ bool CProgressDialog::OnInit()
   _numReduceSymbols = kCurrentFileNameSizeLimit;
   NormalizeSize(true);
 
+  // 7zip-custom: center the progress window on its owner (7zFM / 7zG parent)
+  // instead of the screen, so it lines up with the main window.
+  {
+    HWND self = *this;
+    HWND parent = ::GetParent(self);
+    if (parent && ::IsWindow(parent))
+    {
+      RECT rp = {}, rw = {};
+      if (::GetWindowRect(parent, &rp) && ::GetWindowRect(self, &rw))
+      {
+        const int w = rw.right - rw.left;
+        const int h = rw.bottom - rw.top;
+        int x = rp.left + ((rp.right - rp.left) - w) / 2;
+        int y = rp.top + ((rp.bottom - rp.top) - h) / 2;
+
+        RECT wa = {};
+        ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+        if (x < wa.left) x = wa.left;
+        if (y < wa.top) y = wa.top;
+        if (x + w > wa.right) x = wa.right - w;
+        if (y + h > wa.bottom) y = wa.bottom - h;
+
+        ::SetWindowPos(self, nullptr, x, y, 0, 0,
+                       SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+      }
+    }
+  }
+
   if (!ShowCompressionInfo)
   {
     HideItem(IDT_PROGRESS_PACKED);
