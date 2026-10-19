@@ -22,6 +22,8 @@ bool g_reveal = false;
 custom::PasswordVault *g_vault = nullptr;
 int g_startMode = 0;
 std::wstring g_suggestName;
+HFONT g_eyeFont = nullptr;
+WPARAM g_pwChar = 0x25CF;   // 密码框原本的掩码字符
 
 std::wstring GetDlgText(HWND dlg, int id)
 {
@@ -151,11 +153,42 @@ INT_PTR CALLBACK EntryProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
       SetDlgText(dlg, IDC_E_NAME, d->name);
       SetDlgText(dlg, IDC_E_PASS, d->password);
       SetDlgText(dlg, IDC_E_NOTE, d->note);
+
+      // 眼睛图标：用 Segoe MDL2 Assets 的"查看"字形
+      {
+        HDC hdc = ::GetDC(dlg);
+        const int h = -::MulDiv(11, ::GetDeviceCaps(hdc, LOGPIXELSY), 72);
+        ::ReleaseDC(dlg, hdc);
+        if (g_eyeFont)
+        {
+          ::DeleteObject(g_eyeFont);
+          g_eyeFont = nullptr;
+        }
+        g_eyeFont = ::CreateFontW(h, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+            DEFAULT_PITCH, L"Segoe MDL2 Assets");
+        if (g_eyeFont)
+          ::SendDlgItemMessageW(dlg, IDC_E_EYE, WM_SETFONT, (WPARAM)g_eyeFont, TRUE);
+        ::SetDlgItemTextW(dlg, IDC_E_EYE, L"\xE890");
+
+        g_pwChar = (WPARAM)::SendDlgItemMessageW(dlg, IDC_E_PASS, EM_GETPASSWORDCHAR, 0, 0);
+        if (g_pwChar == 0)
+          g_pwChar = 0x25CF;
+      }
+
       ::SendDlgItemMessageW(dlg, IDC_E_NAME, EM_SETSEL, 0, -1);
       ::SetFocus(::GetDlgItem(dlg, IDC_E_NAME));
       return FALSE;
     }
     case WM_COMMAND:
+      if (LOWORD(wParam) == IDC_E_EYE)
+      {
+        const bool show = (::IsDlgButtonChecked(dlg, IDC_E_EYE) == BST_CHECKED);
+        ::SendDlgItemMessageW(dlg, IDC_E_PASS, EM_SETPASSWORDCHAR,
+                              show ? 0 : g_pwChar, 0);
+        ::InvalidateRect(::GetDlgItem(dlg, IDC_E_PASS), nullptr, TRUE);
+        return TRUE;
+      }
       if (LOWORD(wParam) == IDC_E_BROWSE)
       {
         BrowseArchive(dlg);
@@ -183,6 +216,14 @@ INT_PTR CALLBACK EntryProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM lParam)
       {
         ::EndDialog(dlg, IDCANCEL);
         return TRUE;
+      }
+      break;
+
+    case WM_DESTROY:
+      if (g_eyeFont)
+      {
+        ::DeleteObject(g_eyeFont);
+        g_eyeFont = nullptr;
       }
       break;
   }

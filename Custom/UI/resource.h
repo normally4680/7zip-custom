@@ -17,6 +17,7 @@
 #define IDC_E_BROWSE        1105
 #define IDC_E_PASS          1102
 #define IDC_E_NOTE          1103
+#define IDC_E_EYE           1106
 #define IDC_E_HINT          1104
 
 #endif
