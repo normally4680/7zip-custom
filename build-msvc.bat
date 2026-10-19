@@ -79,6 +79,7 @@ if exist "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      copy /y "%~dp0CPP\7zip\Bun
 if not exist "%OUT%\Lang" mkdir "%OUT%\Lang"
 copy /y "%~dp0Custom\lang\*.txt" "%OUT%\Lang\" >nul
 copy /y "%~dp0Custom\tools\diagnose.bat" "%OUT%\diagnose.bat" >nul
+copy /y "%~dp0Custom\tools\run.bat" "%OUT%\run.bat" >nul
 echo [STAGE] output dir: %OUT%
 exit /b 0
 
