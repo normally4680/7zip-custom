@@ -58,7 +58,10 @@ if "%~1"=="" ( set "LIST=custom 7zdll 7z 7zg 7zfm vault" ) else (
 )
 
 set "FAILED="
-for %%T in (%LIST%) do call :build %%T
+for %%T in (%LIST%) do (
+    call :build %%T
+    if errorlevel 1 goto :stopped
+)
 echo.
 if defined FAILED ( echo [FAIL] failed targets:%FAILED% & exit /b 1 )
 call :stage
@@ -113,6 +116,10 @@ if not "!RC!"=="0" (
 echo [OK] %NAME%
 echo.
 exit /b 0
+
+:stopped
+echo [STOP] a target failed, aborting
+exit /b 1
 
 :clean
 for %%D in (CPP\7zip\UI\Console CPP\7zip\UI\GUI CPP\7zip\UI\FileManager CPP\7zip\Bundles\Format7zF CPP\7zip\Bundles\Fm CPP\7zip\Bundles\Alone CPP\7zip\Bundles\Alone2) do (

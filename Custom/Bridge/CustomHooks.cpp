@@ -12,6 +12,8 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shlobj.h>
+
+#include <vector>
 #include <shellapi.h>
 
 #include <string>
@@ -20,6 +22,8 @@
 #include "../Core/PasswordVault.h"
 
 namespace {
+
+std::wstring ModuleDir();
 
 SRWLOCK g_lock = SRWLOCK_INIT;
 std::wstring g_currentArchive;   // 7zG 进程用：当前正在处理哪个归档
@@ -50,39 +54,39 @@ void DebugLog(const wchar_t *stage, const wchar_t *detail)
   if (!enabled)
     return;
 
-  std::wstring path = logPath;
-  if (path.empty())
+  // 依次尝试几个位置，取第一个能写成功的
+  std::vector<std::wstring> candidates;
+  if (!logPath.empty())
   {
-    // 不依赖 COM：先用 SHGetFolderPathW 拿 %LOCALAPPDATA%
+    candidates.push_back(logPath);
+  }
+  else
+  {
     wchar_t local[MAX_PATH] = {};
+    if (::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH) > 0)
+      candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
     if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
-    {
-      std::wstring dir = local;
-      dir += L"\\7zip-custom";
-      ::CreateDirectoryW(dir.c_str(), nullptr);
-      path = dir + L"\\hook.log";
-    }
-    else
-    {
-      wchar_t tmp[MAX_PATH] = {};
-      if (::GetTempPathW(MAX_PATH, tmp) == 0)
-        return;
-      path = std::wstring(tmp) + L"7zip-custom-hook.log";
-    }
+      candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
+    wchar_t tmp[MAX_PATH] = {};
+    if (::GetTempPathW(MAX_PATH, tmp) > 0)
+      candidates.push_back(std::wstring(tmp) + L"7zip-custom-hook.log");
+    candidates.push_back(ModuleDir() + L"hook.log");
   }
 
+  HANDLE h = INVALID_HANDLE_VALUE;
+  for (const auto &c : candidates)
   {
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
-    {
-      const unsigned long long sz = ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
-      if (sz > 512u * 1024u)
-        ::DeleteFileW(path.c_str());
-    }
-  }
+    if (c.empty())
+      continue;
+    const size_t slash = c.find_last_of(L'\\');
+    if (slash != std::wstring::npos)
+      ::CreateDirectoryW(c.substr(0, slash).c_str(), nullptr);
 
-  HANDLE h = ::CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
-                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    h = ::CreateFileW(c.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE)
+      break;
+  }
   if (h == INVALID_HANDLE_VALUE)
     return;
 
@@ -266,22 +270,20 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   if (r.ok)
     return 1;
 
-  if (r.envError)
+  // 任何失败都把原因摆到明面上：退回 7-Zip 只会再弹一个"拒绝访问"，
+  // 用户看不懂，我们也拿不到信息。
   {
-    // 环境问题：这时候退回 7-Zip 只会让它再报一个莫名其妙的"拒绝访问"，
-    // 所以我们自己把原因说清楚，并吃掉这次点击。
-    std::wstring msg = L"无法预览这张图片：\n\n";
-    msg += r.error;
-    msg += L"\n\n可以尝试：\n"
-           L"· 把 7z.exe / 7z.dll 和 7zFM.exe 放在同一目录\n"
-           L"· 检查杀毒软件是否拦截了 7z.exe 写临时文件\n"
-           L"· 用管理员身份运行 7zFM.exe 再试";
+    std::wstring msg = L"预览这张图片失败：\n\n";
+    msg += r.error.empty() ? L"(未知原因)" : r.error;
+    if (!r.command.empty())
+    {
+      msg += L"\n\n执行的命令：\n";
+      msg += r.command;
+    }
+    msg += L"\n\n（把这段截图发给开发者即可定位）";
     ::MessageBoxW(nullptr, msg.c_str(), L"7-Zip 看图", MB_ICONWARNING);
     return 1;
   }
-
-  // 密码不对之类的业务失败：让 7-Zip 走它原来的流程（会弹自己的密码框）
-  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +297,8 @@ enum
 {
   kCmdVaultManager = 0x7A01,
   kCmdVaultAdd     = 0x7A02,
-  kCmdVaultFolder  = 0x7A03
+  kCmdVaultFolder  = 0x7A03,
+  kCmdVaultDiag    = 0x7A04
 };
 
 const UINT_PTR kSubclassId = 0x7A99;
@@ -337,12 +340,40 @@ void ShowVaultUi(HWND hwnd, int mode)
   ::FreeLibrary(h);
 }
 
+void ShowDiagnostics(HWND hwnd)
+{
+  std::wstring msg = L"7zip-custom 诊断信息\n\n";
+  msg += L"构建时间: ";
+  msg += L"" __DATE__ " " __TIME__;
+  msg += L"\n程序目录: ";
+  msg += ModuleDir();
+
+  const std::wstring sevenZip = ModuleDir() + L"7z.exe";
+  const DWORD a = ::GetFileAttributesW(sevenZip.c_str());
+  msg += L"\n7z.exe  : ";
+  msg += (a != INVALID_FILE_ATTRIBUTES) ? L"存在" : L"缺失";
+
+  wchar_t tmp[MAX_PATH] = {};
+  ::GetTempPathW(MAX_PATH, tmp);
+  msg += L"\n临时目录: ";
+  msg += tmp;
+
+  msg += L"\n密码库  : ";
+  msg += custom::VaultDir();
+
+  msg += L"\n日志    : ";
+  msg += ModuleDir() + L"hook.log（或 %LOCALAPPDATA%\\7zip-custom\\hook.log）";
+
+  ::MessageBoxW(hwnd, msg.c_str(), L"7zip-custom 诊断", MB_ICONINFORMATION);
+}
+
 void OnVaultCommand(HWND hwnd, unsigned cmd)
 {
   switch (cmd)
   {
     case kCmdVaultManager: ShowVaultUi(hwnd, 0); break;
     case kCmdVaultAdd:     ShowVaultUi(hwnd, 1); break;
+    case kCmdVaultDiag:    ShowDiagnostics(hwnd); break;
     case kCmdVaultFolder:
     {
       const std::wstring dir = custom::VaultDir();
@@ -359,7 +390,7 @@ LRESULT CALLBACK MainWndSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   if (msg == WM_COMMAND)
   {
     const unsigned cmd = LOWORD(wp);
-    if (cmd >= kCmdVaultManager && cmd <= kCmdVaultFolder)
+    if (cmd >= kCmdVaultManager && cmd <= kCmdVaultDiag)
     {
       OnVaultCommand(hwnd, cmd);
       return 0;
@@ -372,13 +403,21 @@ LRESULT CALLBACK MainWndSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 
 extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
 {
+  DebugLog(L"AttachMainMenu.enter", L"called");
+
   HWND hwnd = (HWND)hWnd;
   if (!hwnd || !::IsWindow(hwnd))
+  {
+    DebugLog(L"AttachMainMenu", L"bad hwnd");
     return 0;
+  }
 
   HMENU main = ::GetMenu(hwnd);
   if (!main)
+  {
+    DebugLog(L"AttachMainMenu", L"no menu");
     return 0;
+  }
 
   // 菜单重建后会被重新调用：已经有就不重复插入
   if (!MenuHasVault(main))
@@ -391,6 +430,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
     ::AppendMenuW(sub, MF_STRING, kCmdVaultAdd,     L"新增密码条目(&A)...");
     ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(sub, MF_STRING, kCmdVaultFolder,  L"打开密码库存放目录");
+    ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(sub, MF_STRING, kCmdVaultDiag,    L"诊断信息(&D)...");
 
     const int count = ::GetMenuItemCount(main);
     // 插在"帮助"之前；插到末尾会影响 7-Zip 自己的菜单索引
