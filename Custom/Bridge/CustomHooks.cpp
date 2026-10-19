@@ -15,6 +15,7 @@
 
 #include <string>
 
+#include "../Core/ImagePreview.h"
 #include "../Core/PasswordVault.h"
 
 namespace {
@@ -115,12 +116,20 @@ extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *arc
 }
 
 extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
-                                                       const wchar_t *itemRelPath)
+                                                       const wchar_t *itemRelPath,
+                                                       const wchar_t *password)
 {
-  (void)archivePath;
-  (void)itemRelPath;
-  // feature/image-preview 分支在这里接入
-  return 0;
+  if (!archivePath || !*archivePath || !itemRelPath || !*itemRelPath)
+    return 0;
+  if (!custom::IsImageFile(itemRelPath))
+    return 0;
+
+  const custom::PreviewResult r = custom::PrepareImagePreview(
+      archivePath, itemRelPath, password ? std::wstring(password) : std::wstring(), true);
+
+  DebugLog(L"TryOpenImage", r.ok ? r.openedPath.c_str() : r.error.c_str());
+  // 失败就返回 0，让 7-Zip 走它原来的"解压单个文件再打开"流程
+  return r.ok ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
