@@ -35,7 +35,8 @@ int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath,
 // 弹出"输入密码"对话框（我们自己的：可以从密码库选，也可以勾选记住）。
 // 返回 1 = 用户确定，buf 有值；0 = 用不了（DLL 缺失等），调用方回退原生流程；
 //      -1 = 用户取消。
-int CUSTOM_HOOK_API CustomHook_AskPassword(const wchar_t *archivePath,
+// owner 用 void* 传（HWND），NULL 时自己找前台窗口；决定对话框在谁身上居中
+int CUSTOM_HOOK_API CustomHook_AskPassword(void *owner, const wchar_t *archivePath,
                                            wchar_t *buf, int cch);
 
 // 用户手动输入密码且被归档接受后调用，用于"记住密码"。
@@ -60,7 +61,7 @@ int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
 // 之后它的密码框就能查密码库。传 NULL 表示清空。
 void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *archivePath);
 int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, int cch);
-int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(wchar_t *buf, int cch);
+int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(void *owner, wchar_t *buf, int cch);
 
 // 文件管理器主窗口菜单：7zFM 每次重建菜单后调用，可重复调用（内部会去重）。
 // 在菜单栏"帮助"之前插入"密码库(&P)"。返回 1 = 已挂载。
