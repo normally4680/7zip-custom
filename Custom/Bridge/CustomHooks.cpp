@@ -128,8 +128,28 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
       archivePath, itemRelPath, password ? std::wstring(password) : std::wstring(), true);
 
   DebugLog(L"TryOpenImage", r.ok ? r.openedPath.c_str() : r.error.c_str());
-  // 失败就返回 0，让 7-Zip 走它原来的"解压单个文件再打开"流程
-  return r.ok ? 1 : 0;
+  if (!r.ok && !r.command.empty())
+    DebugLog(L"TryOpenImage.cmd", r.command.c_str());
+
+  if (r.ok)
+    return 1;
+
+  if (r.envError)
+  {
+    // 环境问题：这时候退回 7-Zip 只会让它再报一个莫名其妙的"拒绝访问"，
+    // 所以我们自己把原因说清楚，并吃掉这次点击。
+    std::wstring msg = L"无法预览这张图片：\n\n";
+    msg += r.error;
+    msg += L"\n\n可以尝试：\n"
+           L"· 把 7z.exe / 7z.dll 和 7zFM.exe 放在同一目录\n"
+           L"· 检查杀毒软件是否拦截了 7z.exe 写临时文件\n"
+           L"· 用管理员身份运行 7zFM.exe 再试";
+    ::MessageBoxW(nullptr, msg.c_str(), L"7-Zip 看图", MB_ICONWARNING);
+    return 1;
+  }
+
+  // 密码不对之类的业务失败：让 7-Zip 走它原来的流程（会弹自己的密码框）
+  return 0;
 }
 
 // ---------------------------------------------------------------------------
