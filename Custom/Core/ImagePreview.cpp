@@ -58,6 +58,9 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
   if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
     bases.push_back(std::wstring(local) + L"\\");
 
+  // 再加一个"程序目录"，某些受限环境只允许写这里
+  bases.push_back(ModuleDir());
+
   DWORD lastError = 0;
   for (const auto &b : bases)
   {
@@ -71,14 +74,25 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
     const DWORD attr = ::GetFileAttributesW(candidate.c_str());
     if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
     {
-      root = candidate + L"\\";
-      return true;
+      // 还要真能往下写：某些沙箱里"目录存在"但子目录建不了
+      const std::wstring probe = candidate + L"\\.writetest";
+      if (::CreateDirectoryW(probe.c_str(), nullptr))
+      {
+        ::RemoveDirectoryW(probe.c_str());
+        root = candidate + L"\\";
+        return true;
+      }
+      lastError = ::GetLastError();
+      continue;
     }
     lastError = (attr == INVALID_FILE_ATTRIBUTES) ? ::GetLastError() : ERROR_DIRECTORY;
   }
 
-  wchar_t msg[256];
-  swprintf_s(msg, L"无法创建预览目录（错误码 %lu）", (unsigned long)lastError);
+  wchar_t msg[512];
+  swprintf_s(msg,
+      L"没有可写的预览目录（最后一次错误码 %lu）。\n"
+      L"如果你是从聊天窗口的文件卡片启动本程序的，请改成在资源管理器里双击 run.bat，"
+      L"受限环境不允许写临时目录。", (unsigned long)lastError);
   error = msg;
   return false;
 }
