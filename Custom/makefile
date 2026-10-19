@@ -34,7 +34,8 @@ LIB_OBJS = \
   $(O)\CustomHooks.obj \
   $(O)\VaultCrypto.obj \
   $(O)\PasswordVault.obj \
-  $(O)\ImagePreview.obj
+  $(O)\ImagePreview.obj \
+  $(O)\SevenZipInProc.obj
 
 APP_OBJS = $(O)\VaultApp.obj $(O)\VaultDialog.obj
 APP_RES  = $(O)\Vault.res
@@ -68,6 +69,10 @@ $(O)\CustomHooks.obj: Bridge\CustomHooks.cpp Bridge\CustomHooks.h Core\PasswordV
 $(O)\VaultCrypto.obj: Core\VaultCrypto.cpp Core\VaultCrypto.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\VaultCrypto.obj Core\VaultCrypto.cpp
+
+$(O)\SevenZipInProc.obj: Core\SevenZipInProc.cpp Core\SevenZipInProc.h
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\SevenZipInProc.obj Core\SevenZipInProc.cpp
 
 $(O)\ImagePreview.obj: Core\ImagePreview.cpp Core\ImagePreview.h
 	@if not exist "$(O)" mkdir "$(O)"
@@ -119,20 +124,24 @@ $(O)\UiProbe.obj: Tests\UiProbe.cpp
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\UiProbe.obj Tests\UiProbe.cpp
 
-$(OUTDIR)\UiProbe.exe: $(O)\UiProbe.obj $(O)\Custom.lib
+$(OUTDIR)\UiProbe.exe: $(O)\UiProbe.obj $(O)\TestIids.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\UiProbe.obj \
-	  $(O)\Custom.lib user32.lib gdi32.lib comctl32.lib shell32.lib ole32.lib \
-	  bcrypt.lib crypt32.lib
+	  $(O)\Custom.lib $(O)\TestIids.obj user32.lib gdi32.lib comctl32.lib shell32.lib ole32.lib \
+	  oleaut32.lib bcrypt.lib crypt32.lib
+
+$(O)\TestIids.obj: Tests\TestIids.cpp
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\TestIids.obj Tests\TestIids.cpp
 
 $(O)\PreviewTest.obj: Tests\PreviewTest.cpp Core\ImagePreview.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\PreviewTest.obj Tests\PreviewTest.cpp
 
-$(OUTDIR)\PreviewTest.exe: $(O)\PreviewTest.obj $(O)\Custom.lib
+$(OUTDIR)\PreviewTest.exe: $(O)\PreviewTest.obj $(O)\TestIids.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\PreviewTest.obj \
-	  $(O)\Custom.lib user32.lib shell32.lib ole32.lib comctl32.lib bcrypt.lib crypt32.lib
+	  $(O)\Custom.lib $(O)\TestIids.obj user32.lib shell32.lib ole32.lib oleaut32.lib comctl32.lib bcrypt.lib crypt32.lib
 
 $(OUTDIR)\VaultTest.exe: $(O)\VaultTest.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
