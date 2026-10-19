@@ -322,7 +322,20 @@ int AskPasswordDialog(HINSTANCE inst, HWND owner, const wchar_t *archivePath,
   icc.dwICC = ICC_STANDARD_CLASSES;
   ::InitCommonControlsEx(&icc);
 
+  // 进度窗口如果在别的线程/进程，DialogBoxParam 不会自动禁用它，
+  // 用户还能点它把它前置。这里手动禁用，关掉对话框再恢复。
+  const bool crossThread = owner && ::IsWindow(owner) &&
+      ::GetWindowThreadProcessId(owner, nullptr) != ::GetCurrentThreadId();
+  if (crossThread)
+    ::EnableWindow(owner, FALSE);
+
   const INT_PTR r = ::DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_ASKPWD), owner, AskProc, 0);
+
+  if (crossThread && ::IsWindow(owner))
+  {
+    ::EnableWindow(owner, TRUE);
+    ::SetActiveWindow(owner);
+  }
   if (r != IDOK || g_resultCode != 1)
   {
     outPassword.clear();
