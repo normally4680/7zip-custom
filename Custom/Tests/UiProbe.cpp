@@ -147,7 +147,7 @@ int wmain(int argc, wchar_t **argv)
     printf("子菜单 %d 项：\n", n);
     for (int i = 0; i < n; ++i)
       printf("    - %s\n", Utf8(MenuText(sub, i)).c_str());
-    Check(n == 4, "子菜单 4 项（含分隔线）");
+    Check(n == 6, "子菜单 6 项（含分隔线与诊断信息）");
   }
 
   // 幂等：再调一次不应该出现第二个"密码库"
