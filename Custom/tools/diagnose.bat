@@ -11,11 +11,24 @@ set "Z7CUSTOM_DEBUG=%~dp0hook.log"
 if exist "%Z7CUSTOM_DEBUG%" del /q "%Z7CUSTOM_DEBUG%"
 
 echo.
+echo === 运行身份 ===
+whoami
+echo USERPROFILE=%USERPROFILE%
+echo.
+
 echo === 文件检查 ===
 if exist "%~dp07zFM.exe"      (echo [ok] 7zFM.exe)        else (echo [MISSING] 7zFM.exe)
 if exist "%~dp07z.exe"        (echo [ok] 7z.exe)          else (echo [MISSING] 7z.exe)
 if exist "%~dp07z.dll"        (echo [ok] 7z.dll)          else (echo [MISSING] 7z.dll)
 if exist "%~dp07zVaultUi.dll" (echo [ok] 7zVaultUi.dll)   else (echo [MISSING] 7zVaultUi.dll)
+
+echo === 密码库是否可见 ===
+if exist "%LOCALAPPDATA%\7zip-custom\vault.dat" (
+    echo [ok] vault.dat 存在
+) else (
+    echo [MISSING] 当前上下文看不到密码库 -> 说明 7zFM 不是在你自己账户下
+)
+echo.
 
 echo === 7z.exe 能否被启动 ===
 start /wait "" "%~dp07z.exe" i >nul 2>&1
