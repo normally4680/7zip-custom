@@ -398,6 +398,18 @@ Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
       *password = ::SysAllocString(pwBuf);
       return *password ? S_OK : E_OUTOFMEMORY;
     }
+
+    // No exact match -> our dialog (vault list + optional "remember this archive").
+    const int askRes = CustomHook_AskPassword(hookPathPtr, pwBuf,
+                                             (int)(sizeof(pwBuf) / sizeof(pwBuf[0])));
+    if (askRes == 1)
+    {
+      PasswordWasAsked = true;
+      *password = ::SysAllocString(pwBuf);
+      return *password ? S_OK : E_OUTOFMEMORY;
+    }
+    if (askRes < 0)
+      return E_ABORT;
   }
   // ------------------------------------
 
@@ -413,10 +425,7 @@ Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
     return E_NOTIMPL;
 
   PasswordWasAsked = true;
-  const HRESULT hr = Callback->Open_CryptoGetTextPassword(password);
-  if (hr == S_OK && password && *password && hookPathPtr)
-    CustomHook_OnPasswordAccepted(hookPathPtr, *password);
-  return hr;
+  return Callback->Open_CryptoGetTextPassword(password);
   COM_TRY_END
 }
 #endif

@@ -39,7 +39,7 @@ LIB_OBJS = \
 APP_OBJS = $(O)\VaultApp.obj $(O)\VaultDialog.obj
 APP_RES  = $(O)\Vault.res
 
-DLL_OBJS = $(O)\VaultUiExports.obj $(O)\VaultDialog.obj
+DLL_OBJS = $(O)\VaultUiExports.obj $(O)\VaultDialog.obj $(O)\AskPassword.obj
 
 all: lib app dll test probe previewtest
 
@@ -87,7 +87,11 @@ $(O)\VaultDialog.obj: UI\VaultDialog.cpp UI\VaultDialog.h UI\resource.h Core\Pas
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\VaultDialog.obj UI\VaultDialog.cpp
 
-$(O)\VaultUiExports.obj: UI\VaultUiExports.cpp UI\VaultDialog.h
+$(O)\AskPassword.obj: UI\AskPassword.cpp UI\AskPassword.h UI\resource.h Core\PasswordVault.h
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\AskPassword.obj UI\AskPassword.cpp
+
+$(O)\VaultUiExports.obj: UI\VaultUiExports.cpp UI\VaultDialog.h UI\AskPassword.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\VaultUiExports.obj UI\VaultUiExports.cpp
 
