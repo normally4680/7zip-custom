@@ -9,6 +9,8 @@
 
 #include <commctrl.h>
 
+#include <vector>
+
 #include <ctime>
 #include <vector>
 
@@ -197,6 +199,8 @@ INT_PTR CALLBACK AskProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM)
     {
       ::SetDlgItemTextW(dlg, IDC_ASK_ARC, BaseName(g_archive).c_str());
       CenterOnOwner(dlg);
+      ::SetWindowPos(dlg, HWND_TOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
       SetEyeFont(dlg);
       FillCombo(dlg);
 
@@ -322,16 +326,40 @@ int AskPasswordDialog(HINSTANCE inst, HWND owner, const wchar_t *archivePath,
   icc.dwICC = ICC_STANDARD_CLASSES;
   ::InitCommonControlsEx(&icc);
 
-  // 进度窗口如果在别的线程/进程，DialogBoxParam 不会自动禁用它，
-  // 用户还能点它把它前置。这里手动禁用，关掉对话框再恢复。
-  const bool crossThread = owner && ::IsWindow(owner) &&
+  // 弹框期间把本进程所有其它窗口（主窗口、进度窗口）都禁用，
+  // 免得进度窗口还能被点、被前置。DialogBoxParam 只会处理同线程的 owner。
+  std::vector<HWND> disabled;
+  {
+    struct Ctx { std::vector<HWND> *list; } ctx = { &disabled };
+    ::EnumWindows([](HWND h, LPARAM lp) -> BOOL
+    {
+      auto *c = reinterpret_cast<Ctx *>(lp);
+      DWORD pid = 0;
+      ::GetWindowThreadProcessId(h, &pid);
+      if (pid != ::GetCurrentProcessId())
+        return TRUE;
+      if (!::IsWindowVisible(h) || !::IsWindowEnabled(h))
+        return TRUE;
+      if (::GetWindow(h, GW_OWNER) == nullptr && ::GetWindow(h, GW_CHILD) == nullptr)
+        return TRUE;
+      ::EnableWindow(h, FALSE);
+      c->list->push_back(h);
+      return TRUE;
+    }, (LPARAM)&ctx);
+  }
+
+  // 跨进程的进度窗口单独禁用
+  const bool crossProc = owner && ::IsWindow(owner) &&
       ::GetWindowThreadProcessId(owner, nullptr) != ::GetCurrentThreadId();
-  if (crossThread)
+  if (crossProc)
     ::EnableWindow(owner, FALSE);
 
   const INT_PTR r = ::DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_ASKPWD), owner, AskProc, 0);
 
-  if (crossThread && ::IsWindow(owner))
+  for (HWND h : disabled)
+    if (::IsWindow(h))
+      ::EnableWindow(h, TRUE);
+  if (crossProc && ::IsWindow(owner))
   {
     ::EnableWindow(owner, TRUE);
     ::SetActiveWindow(owner);

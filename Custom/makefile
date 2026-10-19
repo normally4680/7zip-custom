@@ -128,7 +128,7 @@ $(OUTDIR)\UiProbe.exe: $(O)\UiProbe.obj $(O)\TestIids.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\UiProbe.obj \
 	  $(O)\Custom.lib $(O)\TestIids.obj user32.lib gdi32.lib comctl32.lib shell32.lib ole32.lib \
-	  oleaut32.lib bcrypt.lib crypt32.lib
+	  oleaut32.lib shlwapi.lib advapi32.lib bcrypt.lib crypt32.lib
 
 $(O)\TestIids.obj: Tests\TestIids.cpp
 	@if not exist "$(O)" mkdir "$(O)"
@@ -141,7 +141,7 @@ $(O)\PreviewTest.obj: Tests\PreviewTest.cpp Core\ImagePreview.h
 $(OUTDIR)\PreviewTest.exe: $(O)\PreviewTest.obj $(O)\TestIids.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
 	$(LINK_TOOL) /nologo /SUBSYSTEM:CONSOLE /OUT:$@ $(O)\PreviewTest.obj \
-	  $(O)\Custom.lib $(O)\TestIids.obj user32.lib shell32.lib ole32.lib oleaut32.lib comctl32.lib bcrypt.lib crypt32.lib
+	  $(O)\Custom.lib $(O)\TestIids.obj user32.lib shell32.lib ole32.lib oleaut32.lib shlwapi.lib advapi32.lib comctl32.lib bcrypt.lib crypt32.lib
 
 $(OUTDIR)\VaultTest.exe: $(O)\VaultTest.obj $(O)\Custom.lib
 	@if not exist "$(OUTDIR)" mkdir "$(OUTDIR)"
