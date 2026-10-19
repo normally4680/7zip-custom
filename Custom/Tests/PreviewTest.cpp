@@ -5,6 +5,11 @@
 
 #include "../Core/ImagePreview.h"
 
+// 直接调用 hook 层，验证"密码为空时自动查库"这条链路
+extern "C" int __cdecl CustomHook_TryOpenImage(const wchar_t *archivePath,
+                                               const wchar_t *itemRelPath,
+                                               const wchar_t *password);
+
 #include <windows.h>
 
 #include <cstdio>
@@ -50,6 +55,20 @@ int wmain(int argc, wchar_t **argv)
   {
     printf("usage: PreviewTest.exe <archive> <inner-path> [password]\n");
     return 2;
+  }
+
+  const bool viaHook = (wcscmp(argv[1], L"--via-hook") == 0);
+  if (viaHook)
+  {
+    if (argc < 4)
+    {
+      printf("usage: PreviewTest.exe --via-hook <archive> <inner-path>\n");
+      return 2;
+    }
+    ::SetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", L"1");
+    const int r = CustomHook_TryOpenImage(argv[2], argv[3], nullptr);  // 故意不传密码
+    printf("hook returned %d (%s)\n", r, r == 1 ? "handled" : "fallback to 7-Zip");
+    return r == 1 ? 0 : 1;
   }
 
   const std::wstring archive = argv[1];
