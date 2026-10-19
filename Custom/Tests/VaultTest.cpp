@@ -58,8 +58,11 @@ int wmain(int argc, wchar_t **argv)
   {
     custom::PasswordVault &v = custom::PasswordVault::Instance();
     v.Load(true);
+    if (!v.Loaded())
+      printf("load failed: %s\n", ToUtf8(v.LastError()).c_str());
     for (const auto &e : v.Entries())
       printf("%s\t%s\n", ToUtf8(e.name).c_str(), ToUtf8(e.password).c_str());
+    printf("(%u entries)\n", (unsigned)v.Entries().size());
     return 0;
   }
 
