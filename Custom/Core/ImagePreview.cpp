@@ -425,12 +425,17 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
         r.ok = true;
         if (launch)
         {
-          const HINSTANCE inst = ::ShellExecuteW(nullptr, L"open", target.c_str(),
-                                                 nullptr, dir.c_str(), SW_SHOWNORMAL);
-          if ((INT_PTR)inst <= 32)
+          const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", target.c_str(),
+                                                      nullptr, dir.c_str(), SW_SHOWNORMAL);
+          if (se <= 32)
           {
             r.ok = false;
-            r.error = L"没有可用的看图程序（ShellExecute 失败）";
+            wchar_t msg[512];
+            swprintf_s(msg,
+                L"打不开看图程序（ShellExecute 返回 %lld）。\n"
+                L"31 = 这个扩展名没有关联程序；5 = 被拒绝；建议把 .bmp/.png 关联到 Honeyview。",
+                (long long)se);
+            r.error = msg;
           }
         }
         return r;
@@ -506,12 +511,17 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 
   if (launch)
   {
-    const HINSTANCE inst = ::ShellExecuteW(nullptr, L"open", target.c_str(),
-                                           nullptr, dir.c_str(), SW_SHOWNORMAL);
-    if ((INT_PTR)inst <= 32)
+    const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", target.c_str(),
+                                                nullptr, dir.c_str(), SW_SHOWNORMAL);
+    if (se <= 32)
     {
       r.ok = false;
-      r.error = L"没有可用的看图程序（ShellExecute 失败）";
+      wchar_t msg[512];
+      swprintf_s(msg,
+          L"打不开看图程序（ShellExecute 返回 %lld）。\n"
+          L"31 = 这个扩展名没有关联程序；5 = 被拒绝；建议把 .bmp/.png 关联到 Honeyview。",
+          (long long)se);
+      r.error = msg;
       return r;
     }
   }
