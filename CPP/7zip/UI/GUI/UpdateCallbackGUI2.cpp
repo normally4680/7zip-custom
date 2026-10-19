@@ -12,6 +12,9 @@
 
 #include "UpdateCallbackGUI.h"
 
+// 7zip-custom: password vault hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
+
 using namespace NWindows;
 
 static const UINT k_UpdNotifyLangs[] =
@@ -51,6 +54,17 @@ HRESULT CUpdateCallbackGUI2::SetOperation_Base(UInt32 notifyOp, const wchar_t *n
 
 HRESULT CUpdateCallbackGUI2::ShowAskPasswordDialog()
 {
+  // 7zip-custom: try the saved password before asking the user
+  {
+    wchar_t pwBuf[256];
+    if (CustomHook_TryPasswordForCurrent(pwBuf, (int)(sizeof(pwBuf) / sizeof(pwBuf[0]))))
+    {
+      Password = pwBuf;
+      PasswordIsDefined = true;
+      return S_OK;
+    }
+  }
+
   CPasswordDialog dialog;
   ProgressDialog->WaitCreating();
   if (dialog.Create(*ProgressDialog) != IDOK)

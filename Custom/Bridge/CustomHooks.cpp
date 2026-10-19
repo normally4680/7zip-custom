@@ -21,6 +21,8 @@
 namespace {
 
 SRWLOCK g_lock = SRWLOCK_INIT;
+std::wstring g_currentArchive;   // 7zG 进程用：当前正在处理哪个归档
+SRWLOCK g_arcLock = SRWLOCK_INIT;
 
 // 设置环境变量 Z7CUSTOM_DEBUG=1 后，hook 调用会追加到 %TEMP%\7zip-custom.log
 void DebugLog(const wchar_t *stage, const wchar_t *detail)
@@ -100,6 +102,25 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath
   }
   DebugLog(L"TryPassword.hit", pw.c_str());
   return CopyToBuf(pw, buf, cch) ? 1 : 0;
+}
+
+extern "C" void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *archivePath)
+{
+  ::AcquireSRWLockExclusive(&g_arcLock);
+  g_currentArchive = (archivePath && *archivePath) ? archivePath : L"";
+  ::ReleaseSRWLockExclusive(&g_arcLock);
+}
+
+extern "C" int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, int cch)
+{
+  std::wstring path;
+  ::AcquireSRWLockExclusive(&g_arcLock);
+  path = g_currentArchive;
+  ::ReleaseSRWLockExclusive(&g_arcLock);
+
+  if (path.empty())
+    return 0;
+  return CustomHook_TryPassword(path.c_str(), buf, cch);
 }
 
 extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *archivePath,
