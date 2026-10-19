@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <shlobj.h>
 #include <shellapi.h>
+#include <shlwapi.h>
 
 #include <cstdio>
 
@@ -207,6 +208,196 @@ std::wstring EnsureHelperExe()
       return srcExe;
 
   return FileExists(dstExe) && FileExists(dstDll) ? dstExe : srcExe;
+}
+
+// 本机可能根本没注册图片关联（AssocQueryString 返回 ERROR_NO_ASSOCIATION），
+// ShellExecute 就会一直失败。这里自己找看图软件：先看配置，再看常见安装位置。
+std::wstring ReadConfigValue(const wchar_t *key)
+{
+  wchar_t local[MAX_PATH] = {};
+  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) != S_OK)
+    return std::wstring();
+  std::wstring ini = std::wstring(local) + L"\\7zip-custom\\config.ini";
+
+  wchar_t buf[MAX_PATH * 2] = {};
+  ::GetPrivateProfileStringW(L"viewer", key, L"", buf,
+                             (DWORD)(sizeof(buf) / sizeof(buf[0])), ini.c_str());
+  return buf;
+}
+
+bool FileExistsSimple(const std::wstring &p)
+{
+  const DWORD a = ::GetFileAttributesW(p.c_str());
+  return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring FindImageViewer()
+{
+  // 1) 配置文件里指定的
+  std::wstring configured = ReadConfigValue(L"path");
+  if (!configured.empty() && FileExistsSimple(configured))
+    return configured;
+
+  // 2) 系统登记的 App Paths
+  static const wchar_t * const kNames[] = {
+    L"Honeyview.exe", L"IrfanView.exe", L"i_view64.exe", L"i_view32.exe",
+    L"JPEGView.exe", L"nomacs.exe", L"Imagine.exe"
+  };
+  for (const wchar_t *name : kNames)
+  {
+    for (const wchar_t *root : { L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\",
+                                 L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" })
+    {
+      std::wstring sub = std::wstring(root) + name;
+      wchar_t val[MAX_PATH * 2] = {};
+      DWORD sz = (DWORD)sizeof(val);
+      if (::RegGetValueW(HKEY_LOCAL_MACHINE, sub.c_str(), nullptr,
+                         RRF_RT_REG_SZ, nullptr, val, &sz) == ERROR_SUCCESS)
+      {
+        std::wstring p = val;
+        if (FileExistsSimple(p))
+          return p;
+      }
+    }
+  }
+
+  // 3) 常见安装目录
+  static const wchar_t * const kCandidates[] = {
+    L"C://Program Files//Honeyview//Honeyview.exe",
+    L"C://Program Files (x86)//Honeyview//Honeyview.exe",
+    L"C://Program Files//Bandizip//Honeyview.exe",
+    L"C://Program Files//IrfanView//i_view64.exe",
+    L"C://Program Files (x86)//IrfanView//i_view32.exe",
+    L"C://Program Files//JPEGView//JPEGView.exe",
+    L"D://Program Files//Honeyview//Honeyview.exe",
+    L"D://Honeyview//Honeyview.exe",
+    L"D://Program Files (x86)//Honeyview//Honeyview.exe"
+  };
+  for (const wchar_t *c : kCandidates)
+    if (FileExistsSimple(c))
+      return c;
+
+  return std::wstring();
+}
+
+// 用系统自带的"Windows 照片查看器"打开（不需要文件关联）。
+// 这台机器上 .bmp/.jpg/.png 都没关联程序，但 PhotoViewer.dll 是存在的。
+bool TryWindowsPhotoViewer(const std::wstring &file)
+{
+  wchar_t pf[MAX_PATH] = {};
+  if (::GetEnvironmentVariableW(L"ProgramFiles", pf, MAX_PATH) == 0)
+    return false;
+
+  const std::wstring dll = std::wstring(pf) + L"\\Windows Photo Viewer\\PhotoViewer.dll";
+  if (!FileExistsSimple(dll))
+    return false;
+
+  wchar_t sys[MAX_PATH] = {};
+  ::GetSystemDirectoryW(sys, MAX_PATH);
+  std::wstring exe = std::wstring(sys) + L"\\" + L"rundll" + L"32.exe";
+
+  std::wstring cmd = L"\"" + exe + L"\" \"" + dll + L"\", ImageView_Fullscreen \"" + file + L"\"";
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!::CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+    return false;
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
+bool LaunchWithExe(const std::wstring &exe, const std::wstring &file, const std::wstring &dir)
+{
+  std::wstring cmd = L"\"" + exe + L"\" \"" + file + L"\"";
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!::CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr,
+                        dir.empty() ? nullptr : dir.c_str(), &si, &pi))
+    return false;
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
+// 用系统关联里登记的"打开命令"直接 CreateProcess。
+// ShellExecute 在关联到 UWP（照片）或某些上下文里会返回 5（拒绝访问），
+// 但进程创建本身是允许的，所以直接按命令行起更稳。
+bool LaunchByAssociation(const std::wstring &file)
+{
+  const size_t dot = file.find_last_of(L'.');
+  if (dot == std::wstring::npos)
+    return false;
+  const std::wstring ext = file.substr(dot);
+
+  wchar_t cmdLine[2048] = {};
+  DWORD sz = (DWORD)(sizeof(cmdLine) / sizeof(cmdLine[0]));
+  if (::AssocQueryStringW(ASSOCF_NONE, ASSOCSTR_COMMAND, ext.c_str(), L"open", cmdLine, &sz) != S_OK)
+    return false;
+
+  // 把 %1/%L/%l/%* 替换成带引号的文件名，其它 %n 去掉
+  std::wstring cmd;
+  const std::wstring quoted = L"\"" + file + L"\"";
+  for (size_t i = 0; i < sz && cmdLine[i]; ++i)
+  {
+    if (cmdLine[i] == L'%' && i + 1 < sz)
+    {
+      const wchar_t c = cmdLine[i + 1];
+      if (c == L'1' || c == L'L' || c == L'l' || c == L'*')
+      {
+        cmd += quoted;
+        ++i;
+        continue;
+      }
+      if (c == L'%') { cmd += L'%'; ++i; continue; }
+      if (c >= L'0' && c <= L'9') { ++i; continue; }
+    }
+    cmd += cmdLine[i];
+  }
+  if (cmd.empty())
+    return false;
+
+  const size_t slash = file.find_last_of(L'\\');
+  const std::wstring workDir = (slash == std::wstring::npos) ? std::wstring()
+                                                             : file.substr(0, slash);
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  std::wstring mutableCmd = cmd;
+  if (!::CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE, 0, nullptr,
+                        workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
+    return false;
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
+// 先 ShellExecute（走默认语义），失败再退回"按关联命令直接起"
+INT_PTR LaunchViewer(const std::wstring &file, const std::wstring &dir)
+{
+  // 1) 自己找到的看图软件（不依赖文件关联）
+  {
+    const std::wstring viewer = FindImageViewer();
+    if (!viewer.empty() && LaunchWithExe(viewer, file, dir))
+      return 42;
+  }
+
+  // 2) 系统关联
+  const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", file.c_str(),
+                                              nullptr, dir.c_str(), SW_SHOWNORMAL);
+  if (se > 32)
+    return se;
+
+  // 3) 关联里登记的命令行
+  if (LaunchByAssociation(file))
+    return 42;
+
+  // 4) 系统自带照片查看器（不依赖关联）
+  if (TryWindowsPhotoViewer(file))
+    return 42;
+
+  return se;
 }
 
 bool RunAndWait(const std::wstring &cmd, DWORD &exitCode, std::wstring &output)
@@ -425,8 +616,7 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
         r.ok = true;
         if (launch)
         {
-          const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", target.c_str(),
-                                                      nullptr, dir.c_str(), SW_SHOWNORMAL);
+          const INT_PTR se = LaunchViewer(target, dir);
           if (se <= 32)
           {
             r.ok = false;
@@ -436,8 +626,9 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
               swprintf_s(msg,
                   L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
                   L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
-                  L"常见原因：7zFM 是从聊天窗口的文件卡片点开的，或者被安全软件限制。\n"
-                  L"请在【资源管理器】里双击 _out\\x64\\run.bat 再试。");
+                  L"这台机器上图片扩展名可能没有关联程序。\n"
+                  L"请在 %%LOCALAPPDATA%%\\7zip-custom\\config.ini 里写：\n"
+                  L"  [viewer]\n  path=C:////Program Files\\Honeyview\\Honeyview.exe");
             }
             else
             {
@@ -522,8 +713,7 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 
   if (launch)
   {
-    const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", target.c_str(),
-                                                nullptr, dir.c_str(), SW_SHOWNORMAL);
+    const INT_PTR se = LaunchViewer(target, dir);
     if (se <= 32)
     {
       r.ok = false;
@@ -533,8 +723,9 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
               swprintf_s(msg,
                   L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
                   L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
-                  L"常见原因：7zFM 是从聊天窗口的文件卡片点开的，或者被安全软件限制。\n"
-                  L"请在【资源管理器】里双击 _out\\x64\\run.bat 再试。");
+                  L"这台机器上图片扩展名可能没有关联程序。\n"
+                  L"请在 %%LOCALAPPDATA%%\\7zip-custom\\config.ini 里写：\n"
+                  L"  [viewer]\n  path=C:////Program Files\\Honeyview\\Honeyview.exe");
             }
             else
             {
