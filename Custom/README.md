@@ -138,6 +138,11 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 
 排查工具：`_out\x64\diagnose.bat`，双击会把环境检查 + hook 日志打出来。
 
+**踩过的坑**：`CFolderLink.Password` 只保存"用户在对话框里输入"的密码。
+如果密码是密码库直接喂给 `CryptoGetTextPassword` 的，7-Zip 不会把它存进
+`CFolderLink`，看图时拿到的就是空密码 —— 加密包必然解不出来。
+所以 `CustomHook_TryOpenImage` 在 password 为空时会**自己再查一次库**。
+
 已知取舍：
 - 密码会出现在 7z.exe 的命令行里（本机进程表可见）。功能优先，后续可改成
   走 stdin（`-si`）或自己实现 dll 提取。

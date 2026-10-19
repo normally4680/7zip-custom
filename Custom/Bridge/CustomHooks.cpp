@@ -62,8 +62,15 @@ void DebugLog(const wchar_t *stage, const wchar_t *detail)
   line += (detail ? detail : L"(null)");
   line += L"\r\n";
 
-  DWORD wrote = 0;
-  ::WriteFile(h, line.c_str(), (DWORD)(line.size() * sizeof(wchar_t)), &wrote, nullptr);
+  // 用系统 ANSI 代码页写（中文系统就是 GBK），这样控制台 type 出来不是乱码
+  int n = ::WideCharToMultiByte(CP_ACP, 0, line.c_str(), (int)line.size(), nullptr, 0, nullptr, nullptr);
+  if (n > 0)
+  {
+    std::string narrow((size_t)n, '\0');
+    ::WideCharToMultiByte(CP_ACP, 0, line.c_str(), (int)line.size(), &narrow[0], n, nullptr, nullptr);
+    DWORD wrote = 0;
+    ::WriteFile(h, narrow.data(), (DWORD)narrow.size(), &wrote, nullptr);
+  }
   ::CloseHandle(h);
 }
 
@@ -145,8 +152,29 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   if (!custom::IsImageFile(itemRelPath))
     return 0;
 
+  // 7-Zip 只会把"对话框里输入的密码"存进 CFolderLink；如果密码是我们从库里
+  // 直接喂给它的，CFolderLink.Password 就是空的。所以这里必须自己再查一次库，
+  // 否则加密包会拿空密码去解，必然失败。
+  std::wstring pwd = password ? password : L"";
+  if (pwd.empty())
+  {
+    ::AcquireSRWLockExclusive(&g_lock);
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    vault.Load(false);
+    std::wstring found;
+    if (vault.FindForArchive(archivePath, found))
+      pwd = found;
+    ::ReleaseSRWLockExclusive(&g_lock);
+    DebugLog(L"TryOpenImage.pwd", pwd.empty() ? L"(vault miss)" : L"(from vault)");
+  }
+
+  // 自测时用：只准备文件，不真的调起看图程序
+  wchar_t nolaunch[8];
+  const bool launch = ::GetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", nolaunch,
+                                                (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
+
   const custom::PreviewResult r = custom::PrepareImagePreview(
-      archivePath, itemRelPath, password ? std::wstring(password) : std::wstring(), true);
+      archivePath, itemRelPath, pwd, launch);
 
   DebugLog(L"TryOpenImage", r.ok ? r.openedPath.c_str() : r.error.c_str());
   if (!r.ok && !r.command.empty())
