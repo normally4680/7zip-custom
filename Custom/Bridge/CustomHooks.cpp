@@ -158,7 +158,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath
   return CopyToBuf(pw, buf, cch) ? 1 : 0;
 }
 
-extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(const wchar_t *archivePath,
+extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(void *owner,
+                                                      const wchar_t *archivePath,
                                                       wchar_t *buf, int cch)
 {
   if (!archivePath || !*archivePath || !buf || cch <= 0)
@@ -180,10 +181,14 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(const wchar_t *archivePath
     return 0;
   }
 
-  HWND owner = ::GetActiveWindow();
-  if (!owner)
-    owner = ::GetForegroundWindow();
-  const int r = fn(owner, archivePath, buf, cch);
+  HWND hOwner = (HWND)owner;
+  if (!hOwner || !::IsWindow(hOwner))
+  {
+    hOwner = ::GetActiveWindow();
+    if (!hOwner)
+      hOwner = ::GetForegroundWindow();
+  }
+  const int r = fn(hOwner, archivePath, buf, cch);
   ::FreeLibrary(h);
   DebugLog(L"AskPassword", r == 1 ? L"ok" : (r < 0 ? L"cancelled" : L"unavailable"));
   return r;
@@ -208,7 +213,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, in
   return CustomHook_TryPassword(path.c_str(), buf, cch);
 }
 
-extern "C" int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(wchar_t *buf, int cch)
+extern "C" int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(void *owner,
+                                                               wchar_t *buf, int cch)
 {
   std::wstring path;
   ::AcquireSRWLockExclusive(&g_arcLock);
@@ -217,7 +223,7 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(wchar_t *buf, in
 
   if (path.empty())
     return 0;
-  return CustomHook_AskPassword(path.c_str(), buf, cch);
+  return CustomHook_AskPassword(owner, path.c_str(), buf, cch);
 }
 
 extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *archivePath,
@@ -275,6 +281,9 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
 
   // 任何失败都把原因摆到明面上：退回 7-Zip 只会再弹一个"拒绝访问"，
   // 用户看不懂，我们也拿不到信息。
+  if (!launch)   // 自测模式：只记日志，不弹框
+    return 0;
+
   {
     std::wstring msg = L"预览这张图片失败：\n\n";
     msg += r.error.empty() ? L"(未知原因)" : r.error;

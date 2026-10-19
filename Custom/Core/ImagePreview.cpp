@@ -60,15 +60,20 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
   DWORD lastError = 0;
   for (const auto &b : bases)
   {
-    const std::wstring candidate = Join3(b, L"7zip-custom", L"\\preview\\");
-    ::CreateDirectoryW(Join3(b, L"7zip-custom", L"").c_str(), nullptr);
+    const std::wstring base = Join3(b, L"7zip-custom", L"");
+    std::wstring candidate = base;
+    if (!candidate.empty() && candidate.back() != L'\\')
+      candidate += L'\\';
+    candidate += L"preview";
+    ::CreateDirectoryW(base.c_str(), nullptr);
     ::CreateDirectoryW(candidate.c_str(), nullptr);
-    if (::GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+    const DWORD attr = ::GetFileAttributesW(candidate.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
     {
-      root = candidate;
+      root = candidate + L"\\";
       return true;
     }
-    lastError = ::GetLastError();
+    lastError = (attr == INVALID_FILE_ATTRIBUTES) ? ::GetLastError() : ERROR_DIRECTORY;
   }
 
   wchar_t msg[256];
@@ -147,23 +152,122 @@ int CountFiles(const std::wstring &dir)
   return n;
 }
 
-bool RunAndWait(const std::wstring &cmd, DWORD &exitCode)
+// 把 7z.exe / 7z.dll 复制到 %TEMP%\7zip-custom\bin 再运行。
+// 直接从程序目录跑，某些环境（安全软件、目录 ACL、沙箱）会拒绝加载 7z.dll，
+// 表现就是 "Codec Load Error ... 7z.dll : Error #80070005"，退出码 2。
+std::wstring EnsureHelperExe()
 {
+  const std::wstring srcDir = ModuleDir();
+  const std::wstring srcExe = srcDir + L"7z.exe";
+  const std::wstring srcDll = srcDir + L"7z.dll";
+  if (!FileExists(srcExe) || !FileExists(srcDll))
+    return srcExe;   // 没有副本可用，只能试原位置
+
+  wchar_t tmp[MAX_PATH] = {};
+  if (::GetTempPathW(MAX_PATH, tmp) == 0)
+    return srcExe;
+
+  const std::wstring dir = std::wstring(tmp) + L"7zip-custom\\bin";
+  ::CreateDirectoryW((std::wstring(tmp) + L"7zip-custom").c_str(), nullptr);
+  ::CreateDirectoryW(dir.c_str(), nullptr);
+
+  const std::wstring dstExe = dir + L"\\7z.exe";
+  const std::wstring dstDll = dir + L"\\7z.dll";
+
+  // 大小不一致就重新复制（构建后二进制会变）
+  const auto sameSize = [](const std::wstring &a, const std::wstring &b)
+  {
+    WIN32_FILE_ATTRIBUTE_DATA fa = {}, fb = {};
+    if (!::GetFileAttributesExW(a.c_str(), GetFileExInfoStandard, &fa) ||
+        !::GetFileAttributesExW(b.c_str(), GetFileExInfoStandard, &fb))
+      return false;
+    return fa.nFileSizeHigh == fb.nFileSizeHigh && fa.nFileSizeLow == fb.nFileSizeLow;
+  };
+
+  if (!sameSize(srcExe, dstExe))
+    if (!::CopyFileW(srcExe.c_str(), dstExe.c_str(), FALSE))
+      return srcExe;
+  if (!sameSize(srcDll, dstDll))
+    if (!::CopyFileW(srcDll.c_str(), dstDll.c_str(), FALSE))
+      return srcExe;
+
+  return FileExists(dstExe) && FileExists(dstDll) ? dstExe : srcExe;
+}
+
+bool RunAndWait(const std::wstring &cmd, DWORD &exitCode, std::wstring &output)
+{
+  // 把子进程的 stdout/stderr 重定向到文件，失败时能把 7-Zip 自己的报错带出来
+  std::wstring outPath;
+  {
+    wchar_t tmp[MAX_PATH] = {};
+    if (::GetTempPathW(MAX_PATH, tmp) > 0)
+      outPath = std::wstring(tmp) + L"7zip-custom-7z.log";
+  }
+
+  SECURITY_ATTRIBUTES sa = {};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+
+  HANDLE hOut = ::CreateFileW(outPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
   si.dwFlags = STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
-  PROCESS_INFORMATION pi = {};
+  // stdin 必须给一个"有效但读不到东西"的句柄，否则 7z 在需要密码时会卡死
+  HANDLE hNul = ::CreateFileW(L"NUL", GENERIC_READ,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                              OPEN_EXISTING, 0, nullptr);
 
+  if (hOut != INVALID_HANDLE_VALUE)
+  {
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.hStdOutput = hOut;
+    si.hStdError = hOut;
+    si.hStdInput = (hNul != INVALID_HANDLE_VALUE) ? hNul : hOut;
+  }
+
+  PROCESS_INFORMATION pi = {};
   std::wstring mutableCmd = cmd;
-  if (!::CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr, FALSE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+  const BOOL ok = ::CreateProcessW(nullptr, &mutableCmd[0], nullptr, nullptr,
+                                   hOut != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW,
+                                   nullptr, nullptr, &si, &pi);
+  if (hOut != INVALID_HANDLE_VALUE)
+    ::CloseHandle(hOut);
+  if (hNul != INVALID_HANDLE_VALUE)
+    ::CloseHandle(hNul);
+  if (!ok)
     return false;
 
-  ::WaitForSingleObject(pi.hProcess, 60000);
+  if (::WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT)
+    ::TerminateProcess(pi.hProcess, 1);
   ::GetExitCodeProcess(pi.hProcess, &exitCode);
   ::CloseHandle(pi.hThread);
   ::CloseHandle(pi.hProcess);
+
+  if (!outPath.empty())
+  {
+    HANDLE h = ::CreateFileW(outPath.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE)
+    {
+      char buf[8192];
+      DWORD got = 0;
+      if (::ReadFile(h, buf, sizeof(buf) - 1, &got, nullptr) && got > 0)
+      {
+        buf[got] = 0;
+        const int w = ::MultiByteToWideChar(CP_ACP, 0, buf, (int)got, nullptr, 0);
+        if (w > 0)
+        {
+          output.resize((size_t)w);
+          ::MultiByteToWideChar(CP_ACP, 0, buf, (int)got, &output[0], w);
+        }
+      }
+      ::CloseHandle(h);
+    }
+    ::DeleteFileW(outPath.c_str());
+  }
   return true;
 }
 
@@ -268,7 +372,7 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
     return r;
   }
 
-  const std::wstring sevenZip = ModuleDir() + L"7z.exe";
+  const std::wstring sevenZip = EnsureHelperExe();
   if (!FileExists(sevenZip))
   {
     r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
@@ -312,7 +416,8 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 
     r.command = cmd;
     DWORD code = 0;
-    if (!RunAndWait(cmd, code))
+    std::wstring sevenZipOutput;
+    if (!RunAndWait(cmd, code, sevenZipOutput))
     {
       wchar_t msg[256];
       swprintf_s(msg, L"启动 7z.exe 失败（错误码 %lu）", (unsigned long)::GetLastError());
@@ -322,12 +427,21 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
     }
     if (code != 0 || !FileExists(target))
     {
-      wchar_t msg[256];
+      wchar_t msg[512];
       if (code == 0)
         swprintf_s(msg, L"目标文件没有解出来");
       else
-        swprintf_s(msg, L"7z.exe 返回 %lu（密码不对时会这样）", (unsigned long)code);
+        swprintf_s(msg, L"7z.exe 返回 %lu", (unsigned long)code);
       r.error = msg;
+      if (!sevenZipOutput.empty())
+      {
+        // 只保留最后几行，够看就行
+        std::wstring tail = sevenZipOutput;
+        if (tail.size() > 400)
+          tail = tail.substr(tail.size() - 400);
+        r.error += L"\n\n7-Zip 的输出：\n";
+        r.error += tail;
+      }
       return r;
     }
   }
