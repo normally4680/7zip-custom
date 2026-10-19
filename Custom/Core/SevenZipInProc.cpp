@@ -344,22 +344,38 @@ HRESULT TryOpenWithFormat(const SevenZipApi &api, UInt32 formatIndex,
   memcpy(&clsid, vClsid.bstrVal, sizeof(GUID));
   PropVariantClear(&vClsid);
 
+  const bool dbg = ::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", nullptr, 0) > 0;
+  if (dbg)
+    fwprintf(stderr, L"[7z-inproc] fmt #%u clsid ok\n", (unsigned)formatIndex);
+
   CMyComPtr<IInArchive> archive;
   if (api.createObject(&clsid, &IID_IInArchive, (void **)&archive) != S_OK || !archive)
+  {
+    if (dbg) fwprintf(stderr, L"[7z-inproc] fmt #%u createObject failed\n", (unsigned)formatIndex);
     return E_FAIL;
+  }
 
   CMyComPtr<IInStream> stream = (IInStream *)(new CFileInStream);
   CFileInStream *inSpec = (CFileInStream *)(IInStream *)stream;
   if (!inSpec->Open(archivePath))
+  {
+    if (dbg) fwprintf(stderr, L"[7z-inproc] fmt #%u open file failed err=%lu\n",
+                      (unsigned)formatIndex, (unsigned long)::GetLastError());
     return HRESULT_FROM_WIN32(::GetLastError());
+  }
 
   CMyComPtr<IArchiveOpenCallback> cb = (IArchiveOpenCallback *)(new COpenCallback);
   COpenCallback *cbSpec = (COpenCallback *)(IArchiveOpenCallback *)cb;
   cbSpec->Password = password;
 
   const UInt64 scanSize = 1 << 23;
-  if (archive->Open(stream, &scanSize, cb) != S_OK)
+  const HRESULT openRes = archive->Open(stream, &scanSize, cb);
+  if (openRes != S_OK)
+  {
+    if (::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", nullptr, 0) > 0)
+      fwprintf(stderr, L"[7z-inproc] format #%u Open -> 0x%08X\n", (unsigned)formatIndex, (unsigned)openRes);
     return E_FAIL;
+  }
 
   outArchive = archive;
   outStream = stream;
