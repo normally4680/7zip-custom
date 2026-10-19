@@ -1,7 +1,7 @@
 PROG = 7zFM.exe
 
 # 7zip-custom: external module (password vault)
-LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib
+LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib shlwapi.lib advapi32.lib
 
 !include "../Format7zF/Arc.mak"
 
