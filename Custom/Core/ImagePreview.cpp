@@ -3,7 +3,10 @@
 #include "ImagePreview.h"
 
 #include <windows.h>
+#include <shlobj.h>
 #include <shellapi.h>
+
+#include <cstdio>
 
 #include <cstdint>
 #include <vector>
@@ -31,17 +34,47 @@ std::wstring ModuleDir()
   return (pos == std::wstring::npos) ? std::wstring() : p.substr(0, pos + 1);
 }
 
-std::wstring TempRoot()
+std::wstring Join3(const std::wstring &a, const wchar_t *b, const wchar_t *c)
 {
-  wchar_t tmp[MAX_PATH];
-  DWORD n = ::GetTempPathW(MAX_PATH, tmp);
-  if (n == 0)
-    return std::wstring();
-  std::wstring p(tmp, n);
-  if (!p.empty() && p.back() != L'\\')
-    p += L'\\';
-  p += L"7zip-custom\\preview\\";
-  return p;
+  std::wstring r = a;
+  if (!r.empty() && r.back() != L'\\')
+    r += L'\\';
+  r += b;
+  r += c;
+  return r;
+}
+
+// 优先 %TEMP%，不行再退到 %LOCALAPPDATA%（少数环境 TEMP 被策略禁写）
+bool EnsureTempRoot(std::wstring &root, std::wstring &error)
+{
+  std::vector<std::wstring> bases;
+  wchar_t buf[MAX_PATH];
+  DWORD n = ::GetTempPathW(MAX_PATH, buf);
+  if (n > 0 && n < MAX_PATH)
+    bases.push_back(std::wstring(buf, n));
+
+  wchar_t local[MAX_PATH];
+  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
+    bases.push_back(std::wstring(local) + L"\\");
+
+  DWORD lastError = 0;
+  for (const auto &b : bases)
+  {
+    const std::wstring candidate = Join3(b, L"7zip-custom", L"\\preview\\");
+    ::CreateDirectoryW(Join3(b, L"7zip-custom", L"").c_str(), nullptr);
+    ::CreateDirectoryW(candidate.c_str(), nullptr);
+    if (::GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+    {
+      root = candidate;
+      return true;
+    }
+    lastError = ::GetLastError();
+  }
+
+  wchar_t msg[256];
+  swprintf_s(msg, L"无法创建预览目录（错误码 %lu）", (unsigned long)lastError);
+  error = msg;
+  return false;
 }
 
 uint32_t Fnv1a(const std::wstring &s)
@@ -151,8 +184,8 @@ bool IsImageFile(const wchar_t *name)
 
 void CleanupPreviewDirs(int maxAgeHours)
 {
-  const std::wstring root = TempRoot();
-  if (root.empty())
+  std::wstring root, err;
+  if (!EnsureTempRoot(root, err))
     return;
 
   FILETIME now;
@@ -228,14 +261,15 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
   const std::wstring sevenZip = ModuleDir() + L"7z.exe";
   if (!FileExists(sevenZip))
   {
-    r.error = L"找不到 7z.exe";
+    r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
+    r.envError = true;
     return r;
   }
 
-  const std::wstring root = TempRoot();
-  if (root.empty())
+  std::wstring root;
+  if (!EnsureTempRoot(root, r.error))
   {
-    r.error = L"取不到临时目录";
+    r.envError = true;
     return r;
   }
 
@@ -266,15 +300,24 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
       cmd += L" " + pattern;
     }
 
+    r.command = cmd;
     DWORD code = 0;
     if (!RunAndWait(cmd, code))
     {
-      r.error = L"启动 7z.exe 失败";
+      wchar_t msg[256];
+      swprintf_s(msg, L"启动 7z.exe 失败（错误码 %lu）", (unsigned long)::GetLastError());
+      r.error = msg;
+      r.envError = true;
       return r;
     }
     if (code != 0 || !FileExists(target))
     {
-      r.error = (code == 0) ? L"目标文件没有解出来" : L"7z.exe 返回非 0";
+      wchar_t msg[256];
+      if (code == 0)
+        swprintf_s(msg, L"目标文件没有解出来");
+      else
+        swprintf_s(msg, L"7z.exe 返回 %lu（密码不对时会这样）", (unsigned long)code);
+      r.error = msg;
       return r;
     }
   }

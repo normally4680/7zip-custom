@@ -56,6 +56,19 @@ int CountVaultMenus(HMENU main)
   return n;
 }
 
+std::wstring ModuleDir()
+{
+  wchar_t buf[MAX_PATH * 2];
+  const DWORD n = ::GetModuleFileNameW(nullptr, buf, (DWORD)(sizeof(buf) / sizeof(buf[0])));
+  if (n == 0 || n >= sizeof(buf) / sizeof(buf[0]))
+    return std::wstring();
+  std::wstring p(buf, n);
+  const size_t pos = p.find_last_of(L"\\/");
+  return (pos == std::wstring::npos) ? std::wstring() : p.substr(0, pos + 1);
+}
+
+INT_PTR CALLBACK StubDlgProc(HWND, UINT, WPARAM, LPARAM) { return FALSE; }
+
 } // namespace
 
 int wmain()
@@ -120,6 +133,26 @@ int wmain()
   Check(CountVaultMenus(::GetMenu(hwnd)) == 1, "重复调用不会插入第二个菜单");
 
   ::DestroyWindow(hwnd);
+
+  // ---- 密码条目对话框：确认眼睛按钮存在 ----
+  {
+    const std::wstring dllPath = ModuleDir() + L"7zVaultUi.dll";
+    HMODULE h = ::LoadLibraryW(dllPath.c_str());
+    Check(h != nullptr, "能加载 7zVaultUi.dll");
+    if (h)
+    {
+      HWND dlg = ::CreateDialogParamW(h, MAKEINTRESOURCEW(102), nullptr, StubDlgProc, 0);
+      Check(dlg != nullptr, "能创建密码条目对话框");
+      if (dlg)
+      {
+        Check(::GetDlgItem(dlg, 1102) != nullptr, "密码输入框存在");
+        Check(::GetDlgItem(dlg, 1106) != nullptr, "密码框右侧的眼睛按钮存在");
+        ::DestroyWindow(dlg);
+      }
+      ::FreeLibrary(h);
+    }
+  }
+
   printf("\n%s (%d failed)\n", g_failed ? "FAILED" : "ALL PASSED", g_failed);
   return g_failed ? 1 : 0;
 }

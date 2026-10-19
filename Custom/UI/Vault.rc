@@ -41,7 +41,9 @@ BEGIN
     EDITTEXT        IDC_E_NAME, 7, 18, 176, 12, ES_AUTOHSCROLL
     PUSHBUTTON      "...", IDC_E_BROWSE, 187, 18, 30, 12
     LTEXT           "密码", -1, 7, 36, 210, 8
-    EDITTEXT        IDC_E_PASS, 7, 47, 210, 12, ES_PASSWORD | ES_AUTOHSCROLL
+    EDITTEXT        IDC_E_PASS, 7, 47, 176, 12, ES_PASSWORD | ES_AUTOHSCROLL
+    CONTROL         "", IDC_E_EYE, "Button", BS_AUTOCHECKBOX | BS_PUSHLIKE | WS_TABSTOP,
+                    187, 47, 30, 12
     LTEXT           "备注", -1, 7, 65, 210, 8
     EDITTEXT        IDC_E_NOTE, 7, 76, 210, 12, ES_AUTOHSCROLL
     DEFPUSHBUTTON   "确定", IDOK,     112, 95, 50, 14

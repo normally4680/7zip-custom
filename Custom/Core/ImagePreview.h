@@ -23,6 +23,10 @@ struct PreviewResult
   std::wstring openedPath;   // 传给看图程序的文件
   std::wstring tempDir;      // 临时目录（调试用）
   std::wstring error;
+  // true = 环境问题（缺 7z.exe / 建不了临时目录 / 起不了子进程），
+  //        这种失败不该静默退回 7-Zip，否则用户只会看到 7-Zip 的"拒绝访问"
+  bool envError = false;
+  std::wstring command;      // 实际调用的 7z.exe 命令行（排错用）
 };
 
 bool IsImageFile(const wchar_t *name);
