@@ -33,6 +33,9 @@
 
 #include "resource.h"
 
+// 7zip-custom: image preview hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
+
 using namespace NWindows;
 using namespace NSynchronization;
 using namespace NFile;
@@ -1493,6 +1496,25 @@ void CPanel::OpenItemInArchive(unsigned index, bool tryInternal, bool tryExterna
   if (tryExternal)
     if (IsVirus_Message(name))
       return;
+
+  #ifndef Z7_SFX
+  // ---- 7zip-custom: image preview ----
+  // Take over "open this image" when the item lives inside an archive:
+  // extract the whole image folder to a temp dir and hand the clicked file
+  // to the associated viewer, so wheel navigation walks the sibling files.
+  if (tryExternal && !editMode && !_parentFolders.IsEmpty())
+  {
+    const CFolderLink &fl = _parentFolders.Back();
+    if (!fl.FilePath.IsEmpty())
+    {
+      const UString arcPath = fs2us(fl.FilePath);
+      const wchar_t *pwd = fl.UsePassword ? (const wchar_t *)fl.Password : NULL;
+      if (CustomHook_TryOpenImage(arcPath, relPath, pwd))
+        return;
+    }
+  }
+  // ----------------------------------
+  #endif
 
   if (!_folderOperations)
   {

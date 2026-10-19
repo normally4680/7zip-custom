@@ -12,7 +12,8 @@ Custom/
 │   └── CustomHooks.cpp     参数校验 + 加锁 + 分发给 Core
 ├── Core/                   纯逻辑，不依赖 7-Zip 任何类型
 │   ├── VaultCrypto.*       AES-256-GCM（BCrypt）+ DPAPI
-│   └── PasswordVault.*     加密密码库的读写与匹配
+│   ├── PasswordVault.*     加密密码库的读写与匹配
+│   └── ImagePreview.*      看图：批量提取同目录图片到临时区
 ├── UI/                     独立 UI 层（一份代码，两个宿主）
 │   ├── VaultDialog.*       对话框逻辑（核心）
 │   ├── VaultApp.cpp        宿主①：7zVault.exe 独立管理器
@@ -22,7 +23,8 @@ Custom/
 ├── lang/zh-cn.txt          官方简体中文语言包（从 26.04 安装包提取）
 ├── Tests/
 │   ├── VaultTest.cpp       密码库自测（22 项断言）
-│   └── UiProbe.cpp         菜单注入自测（6 项断言）
+│   ├── UiProbe.cpp         菜单注入自测（6 项断言）
+│   └── PreviewTest.cpp     看图提取自测（含缓存/错误密码）
 └── makefile                Custom.lib / 7zVault.exe / 7zVaultUi.dll / 测试
 ```
 
@@ -48,6 +50,7 @@ Custom/
 | `CPP/7zip/UI/Common/ArchiveOpenCallback.cpp` | `COpenCallbackImp::CryptoGetTextPassword` 里加一段：先从库取密码；用户手输了密码则记下来。约 20 行 |
 | `CPP/7zip/UI/FileManager/ExtractCallback.cpp` | `CExtractCallbackImp::CryptoGetTextPassword` 同样的两段（针对"只有数据加密、头没加密"的包） |
 | `CPP/7zip/UI/FileManager/MyLoadMenu.cpp` | 1 个 include + 1 行调用：菜单重建完挂上"密码库" |
+| `CPP/7zip/UI/FileManager/PanelItemOpen.cpp` | 1 个 include + 12 行：打开条目时先问看图模块 |
 | `CPP/7zip/UI/Console/makefile`<br>`CPP/7zip/UI/GUI/makefile`<br>`CPP/7zip/Bundles/Fm/makefile` | 各 1 行：`LIBS = $(LIBS) ...Custom.lib bcrypt.lib crypt32.lib` |
 
 三个 makefile 都要加，因为 `ArchiveOpenCallback.cpp` 会被 7z.exe / 7zG.exe / 7zFM.exe
@@ -100,7 +103,35 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 → 都没有就用内置英文。所以只要放对位置，中文 Windows 上会自动变中文；
 想手动切换：工具 → 选项 → 语言。
 
-## 七、跨模块 ABI 约定（改 Bridge 前必读）
+## 七、看图模块（feature/image-preview）
+
+目标：在 7zFM 里双击图片，用 Honeyview 打开后能**滚轮翻遍整包图片**，但不需要
+把整个压缩包解开。
+
+做法：`CPanel::OpenItemInArchive` 在创建临时目录前调用
+`CustomHook_TryOpenImage(archivePath, relPath, password)`：
+
+1. 判断扩展名是不是图片（jpg/png/gif/webp/tiff/avif/heic/psd…），不是就返回 0
+2. 临时目录按 `归档路径 + 归档内目录` 做哈希：`%TEMP%\7zip-custom\preview\<hash>`
+   - 同一个目录第二次打开直接命中缓存，0 ms
+3. 用**同目录的 7z.exe** 把该目录下所有图片批量解出来
+   （`x archive -o<dir> -y -bd -bso0 -bsp0 -p<pwd> "photos\*.jpg" "photos\*.png" …`）
+4. `ShellExecute` 打开被点的那张，工作目录设成该临时目录
+5. 看图软件按"同目录兄弟文件"翻页 → 整包图片都能滚
+
+失败要能退化：密码不对、7z.exe 缺失、没有关联看图程序 —— 一律返回 0，
+让 7-Zip 走它原来的"解压单个文件再打开"流程，用户至少还能看图。
+
+为什么用 7z.exe 而不是 7z.dll：复用的是同一个引擎（加密/分卷/嵌套全一致），
+不用在我们这边重写 `IInArchive` + `IArchiveExtractCallback` 一整套 COM 回调；
+代价只是几十毫秒的进程启动开销。
+
+已知取舍：
+- 密码会出现在 7z.exe 的命令行里（本机进程表可见）。功能优先，后续可改成
+  走 stdin（`-si`）或自己实现 dll 提取。
+- 预览目录 72 小时自动清理，命中缓存时不会重复解压。
+
+## 八、跨模块 ABI 约定（改 Bridge 前必读）
 
 1. **只用 C ABI**，函数显式 `__cdecl`。7-Zip 用 `/Gr`（默认 fastcall），
    不写死调用约定会在链接期"看起来正常、运行期栈错乱"。
@@ -111,7 +142,7 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 编译参数刻意与 7-Zip 对齐：`/MT /GS- /EHsc /Zc:wchar_t`。
 静态 CRT 一致，内存不会跨到另一个堆上。
 
-## 八、密码库设计
+## 九、密码库设计
 
 存储位置：`%LOCALAPPDATA%\7zip-custom\`
 
@@ -130,7 +161,7 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 
 环境变量 `Z7CUSTOM_VAULT_DIR` 可以重定向库目录（便携模式 / 自动化测试用）。
 
-## 九、构建
+## 十、构建
 
 ```bash
 build-msvc.bat            # 全部：Custom.lib + 7z.dll/7z.exe/7zG.exe/7zFM.exe + 7zVault + 测试
@@ -147,7 +178,7 @@ build-msvc.bat 7zfm       # 只编 7zFM.exe
 cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 ```
 
-## 十、踩过的坑（别再踩）
+## 十一、踩过的坑（别再踩）
 
 1. **makefile 里不要写中文注释**。nmake 按 ANSI 代码页读 makefile，UTF-8 中文
    会让它把**下一行**吞掉或错位，症状是"某个变量莫名其妙没生效"。
@@ -171,7 +202,7 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 7. **`::ListView_xxx` 不行**。commctrl 的 `ListView_*` 是宏，前面加 `::` 会变成
    `::(BOOL)SNDMSG(...)`，报 `C2589: "(": "::" 右边的非法标记`。
 
-## 十一、后续可做
+## 十二、后续可做
 
 - 控制台接入：`CPP/7zip/UI/Console/OpenCallbackConsole.cpp` 的
   `Open_CryptoGetTextPassword`，加上 `Console/makefile` 的 LIBS 一行。
