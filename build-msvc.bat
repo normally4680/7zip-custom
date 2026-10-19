@@ -73,6 +73,8 @@ if exist "%~dp0CPP\7zip\Bundles\Format7zF\x64\7z.dll"  copy /y "%~dp0CPP\7zip\Bu
 if exist "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        copy /y "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        "%OUT%\" >nul
 if exist "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           copy /y "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           "%OUT%\" >nul
 if exist "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      copy /y "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      "%OUT%\" >nul
+if not exist "%OUT%\Lang" mkdir "%OUT%\Lang"
+copy /y "%~dp0Custom\lang\*.txt" "%OUT%\Lang\" >nul
 echo [STAGE] output dir: %OUT%
 exit /b 0
 
