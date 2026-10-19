@@ -2,6 +2,9 @@ PROG = 7z.exe
 CFLAGS = $(CFLAGS)  \
   -DZ7_EXTERNAL_CODECS \
 
+# 7zip-custom: external module (password vault)
+LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib
+
 COMMON_OBJS = \
   $O\CommandLineParser.obj \
   $O\CRC.obj \

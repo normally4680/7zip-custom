@@ -10,6 +10,9 @@ LIBS = $(LIBS) comctl32.lib htmlhelp.lib comdlg32.lib gdi32.lib
 CFLAGS = $(CFLAGS) -DZ7_DEVICE_FILE
 !ENDIF
 
+# 7zip-custom: external module (password vault)
+LIBS = $(LIBS) ..\..\..\..\Custom\build\Custom.lib bcrypt.lib crypt32.lib
+
 GUI_OBJS = \
   $O\BenchmarkDialog.obj \
   $O\CompressDialog.obj \

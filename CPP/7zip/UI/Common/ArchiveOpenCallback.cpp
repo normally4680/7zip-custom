@@ -10,6 +10,9 @@
 
 #include "../../Common/StreamUtils.h"
 
+// 7zip-custom: external password vault hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
+
 #include "ArchiveOpenCallback.h"
 
 // #define DEBUG_VOLUMES
@@ -370,6 +373,34 @@ Z7_COM7F_IMF(COpenCallbackImp::GetStream(const wchar_t *name, IInStream **inStre
 Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
 {
   COM_TRY_BEGIN
+
+  // ---- 7zip-custom: resolve the archive path for the vault ----
+  // FileNames is only filled later (in GetStream), so at password time we
+  // fall back to the path recorded by Init2.
+  UString hookPath;
+  if (!FileNames.IsEmpty())
+    hookPath = FileNames[0];
+  else if (!_fileInfo.Name.IsEmpty())
+    hookPath = fs2us(_folderPrefix + _fileInfo.Name);
+  const wchar_t *hookPathPtr = hookPath.IsEmpty() ? NULL : (const wchar_t *)hookPath;
+  // -------------------------------------------------------------
+
+  // ---- 7zip-custom: auto-fill password from vault ----
+  // This must run BEFORE the ReOpenCallback branch: when the first open
+  // attempt fails, 7-Zip sets ReOpenCallback and the retry would otherwise
+  // go straight to the UI dialog without ever passing this object again.
+  if (!PasswordWasAsked && hookPathPtr)
+  {
+    wchar_t pwBuf[256];
+    if (CustomHook_TryPassword(hookPathPtr, pwBuf, (int)(sizeof(pwBuf) / sizeof(pwBuf[0]))))
+    {
+      PasswordWasAsked = true;
+      *password = ::SysAllocString(pwBuf);
+      return *password ? S_OK : E_OUTOFMEMORY;
+    }
+  }
+  // ------------------------------------
+
   if (ReOpenCallback)
   {
     Z7_DECL_CMyComPtr_QI_FROM(
@@ -380,8 +411,12 @@ Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
   }
   if (!Callback)
     return E_NOTIMPL;
+
   PasswordWasAsked = true;
-  return Callback->Open_CryptoGetTextPassword(password);
+  const HRESULT hr = Callback->Open_CryptoGetTextPassword(password);
+  if (hr == S_OK && password && *password && hookPathPtr)
+    CustomHook_OnPasswordAccepted(hookPathPtr, *password);
+  return hr;
   COM_TRY_END
 }
 #endif

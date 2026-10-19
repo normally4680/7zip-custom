@@ -8,6 +8,9 @@
 #include "../../../Common/StringConvert.h"
 
 #include "../../../Windows/ErrorMsg.h"
+
+// 7zip-custom: external password vault hook (see Custom/Bridge/CustomHooks.h)
+#include "../../../../Custom/Bridge/CustomHooks.h"
 #include "../../../Windows/FileDir.h"
 #include "../../../Windows/FileFind.h"
 #include "../../../Windows/PropVariantConv.h"
@@ -683,6 +686,20 @@ HRESULT CExtractCallbackImp::SetPassword(const UString &password)
 Z7_COM7F_IMF(CExtractCallbackImp::CryptoGetTextPassword(BSTR *password))
 {
   PasswordWasAsked = true;
+
+  // ---- 7zip-custom: auto-fill password from vault ----
+  if (!PasswordIsDefined && !_currentArchivePath.IsEmpty())
+  {
+    wchar_t pwBuf[256];
+    if (CustomHook_TryPassword(_currentArchivePath, pwBuf, (int)(sizeof(pwBuf) / sizeof(pwBuf[0]))))
+    {
+      Password = pwBuf;
+      PasswordIsDefined = true;
+      return StringToBstr(Password, password);
+    }
+  }
+  // ------------------------------------
+
   if (!PasswordIsDefined)
   {
     CPasswordDialog dialog;
@@ -699,6 +716,10 @@ Z7_COM7F_IMF(CExtractCallbackImp::CryptoGetTextPassword(BSTR *password))
     if (dialog.ShowPassword != showPassword)
       NExtract::Save_ShowPassword(dialog.ShowPassword);
     #endif
+    // ---- 7zip-custom: remember manually entered password ----
+    if (!_currentArchivePath.IsEmpty())
+      CustomHook_OnPasswordAccepted(_currentArchivePath, Password);
+    // ---------------------------------------------------
   }
   return StringToBstr(Password, password);
 }
