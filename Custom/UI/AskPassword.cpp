@@ -83,6 +83,38 @@ void SetEyeFont(HWND dlg)
   ::SetDlgItemTextW(dlg, IDC_ASK_EYE, L"\xE890");
 }
 
+void CenterWindowOn(HWND wnd, HWND ref)
+{
+  RECT rr = {}, rw = {};
+  if (!::GetWindowRect(ref, &rr) || !::GetWindowRect(wnd, &rw))
+    return;
+  const int w = rw.right - rw.left;
+  const int h = rw.bottom - rw.top;
+  int x = rr.left + ((rr.right - rr.left) - w) / 2;
+  int y = rr.top + ((rr.bottom - rr.top) - h) / 2;
+
+  RECT wa = {};
+  ::SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+  if (x < wa.left) x = wa.left;
+  if (y < wa.top) y = wa.top;
+  if (x + w > wa.right) x = wa.right - w;
+  if (y + h > wa.bottom) y = wa.bottom - h;
+
+  ::SetWindowPos(wnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// 7zG 的进度窗口默认是在屏幕居中的，和 7zFM 不贴；这里先把它挪到 7zFM 中间，
+// 我们的密码框再居中到进度窗口上，视觉上就一致了。
+void AlignProgressOnMain(HWND progress)
+{
+  if (!progress || !::IsWindow(progress))
+    return;
+  HWND main = ::FindWindowW(L"7-Zip::FM", nullptr);
+  if (!main || main == progress || !::IsWindow(main))
+    return;
+  CenterWindowOn(progress, main);
+}
+
 void CenterOnOwner(HWND dlg)
 {
   HWND owner = ::GetParent(dlg);
@@ -228,6 +260,7 @@ int AskPasswordDialog(HINSTANCE inst, HWND owner, const wchar_t *archivePath,
                       std::wstring &outPassword)
 {
   g_inst = inst;
+  AlignProgressOnMain(owner);
   g_archive = (archivePath ? archivePath : L"");
   g_result.clear();
   g_resultCode = 0;

@@ -1,6 +1,7 @@
 // Custom/Core/ImagePreview.cpp
 
 #include "ImagePreview.h"
+#include "SevenZipInProc.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -372,14 +373,6 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
     return r;
   }
 
-  const std::wstring sevenZip = EnsureHelperExe();
-  if (!FileExists(sevenZip))
-  {
-    r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
-    r.envError = true;
-    return r;
-  }
-
   std::wstring root;
   if (!EnsureTempRoot(root, r.error))
   {
@@ -401,7 +394,37 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 
     CleanupPreviewDirs(72);
 
-    std::wstring cmd = L"\"" + sevenZip + L"\" x \"" + archivePath + L"\" -o\"" + dir +
+    // 首选：进程内用 7z.dll 解压（不启动子进程，绕开一堆环境问题）
+    {
+      std::vector<std::wstring> extList;
+      for (const wchar_t *e : kImageExts)
+        extList.push_back(e);
+
+      int count = 0;
+      std::wstring ipError;
+      const std::wstring dll = ModuleDir() + L"7z.dll";
+      if (ExtractImagesInProcess(dll.c_str(), archivePath, innerDir, password, dir,
+                                 extList, count, ipError) && FileExists(target))
+      {
+        r.openedPath = target;
+        r.extracted = count;
+        r.ok = true;
+        if (launch)
+        {
+          const HINSTANCE inst = ::ShellExecuteW(nullptr, L"open", target.c_str(),
+                                                 nullptr, dir.c_str(), SW_SHOWNORMAL);
+          if ((INT_PTR)inst <= 32)
+          {
+            r.ok = false;
+            r.error = L"没有可用的看图程序（ShellExecute 失败）";
+          }
+        }
+        return r;
+      }
+      r.error = ipError;   // 保留，万一子进程也失败就用它
+    }
+
+    std::wstring cmd = L"\"" + ModuleDir() + L"7z.exe\" x \"" + archivePath + L"\" -o\"" + dir +
                        L"\" -y -bd -bso0 -bsp0";
     // 有密码就带上，没有就传空密码，避免子进程卡在交互提示上
     cmd += password.empty() ? L" -p" : (L" -p\"" + password + L"\"");
@@ -414,10 +437,27 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
       cmd += L" " + pattern;
     }
 
-    r.command = cmd;
+    const std::wstring sevenZip = EnsureHelperExe();
+    if (!FileExists(sevenZip))
+    {
+      r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
+      r.envError = true;
+      return r;
+    }
+    std::wstring cmd2 = cmd;
+    // 把命令里的 exe 路径换成实际使用的那个
+    {
+      const std::wstring oldExe = L"\"" + ModuleDir() + L"7z.exe\"";
+      const size_t p = cmd2.find(oldExe);
+      if (p != std::wstring::npos)
+        cmd2.replace(p, oldExe.size(), L"\"" + sevenZip + L"\"");
+    }
+
+    r.command = cmd2;
+
     DWORD code = 0;
     std::wstring sevenZipOutput;
-    if (!RunAndWait(cmd, code, sevenZipOutput))
+    if (!RunAndWait(cmd2, code, sevenZipOutput))
     {
       wchar_t msg[256];
       swprintf_s(msg, L"启动 7z.exe 失败（错误码 %lu）", (unsigned long)::GetLastError());
