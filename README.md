@@ -9,7 +9,7 @@
 
 ## 下载与使用
 
-1. 打开 [Releases](../../releases) 下载最新的 `7zip-custom-portable-*.zip`。
+1. 打开 [Releases](https://github.com/normally4680/7zip-custom/releases) 下载最新的 `7zip-custom-portable-*.zip`。
 2. 右键 zip → 属性 → 勾选“解除锁定”（可选，减少 SmartScreen 提示），然后解压到任意可写目录。
 3. 双击 `7zFM.exe` 即可，**不需要任何启动脚本**。
 4. 密码库和日志会自动保存在 exe 同目录的 `data\`；换电脑时整个文件夹一起拷走即可。
