@@ -11,9 +11,6 @@
 
 #include <vector>
 
-#include <ctime>
-#include <vector>
-
 #include "../Core/PasswordVault.h"
 
 namespace {
@@ -60,7 +57,7 @@ void FillCombo(HWND dlg)
     if (idx >= 0)
       ::SendMessageW(combo, CB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
 
-    if (sel < 0 && !base.empty() && e.name == base)
+    if (sel < 0 && !base.empty() && _wcsicmp(e.name.c_str(), base.c_str()) == 0)
       sel = idx;
   }
 
@@ -264,6 +261,7 @@ INT_PTR CALLBACK AskProc(HWND dlg, UINT msg, WPARAM wParam, LPARAM)
             return TRUE;
           }
           g_result = buf;
+          ::SecureZeroMemory(buf, sizeof(buf));
 
           if (::IsDlgButtonChecked(dlg, IDC_ASK_SAVE) == BST_CHECKED)
           {
@@ -371,5 +369,8 @@ int AskPasswordDialog(HINSTANCE inst, HWND owner, const wchar_t *archivePath,
   }
 
   outPassword = g_result;
+  if (!g_result.empty())
+    ::SecureZeroMemory(&g_result[0], g_result.size() * sizeof(wchar_t));
+  g_result.clear();
   return 1;
 }

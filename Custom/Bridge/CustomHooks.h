@@ -71,6 +71,9 @@ int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd);
 // 归档成功打开后调用（供后续功能挂载，当前为空实现）
 void CUSTOM_HOOK_API CustomHook_OnArchiveOpened(const wchar_t *archivePath);
 
+// 归档层级关闭时调用（CPanel::CloseOneLevel）：删除这个归档的预览临时目录
+void CUSTOM_HOOK_API CustomHook_OnArchiveClosed(const wchar_t *archivePath);
+
 #ifdef __cplusplus
 }
 #endif

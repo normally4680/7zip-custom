@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 
 #include <vector>
 #include <shellapi.h>
@@ -29,51 +30,101 @@ SRWLOCK g_lock = SRWLOCK_INIT;
 std::wstring g_currentArchive;   // 7zG 进程用：当前正在处理哪个归档
 SRWLOCK g_arcLock = SRWLOCK_INIT;
 
-// 设置环境变量 Z7CUSTOM_DEBUG=1 后，hook 调用会追加到 %TEMP%\7zip-custom.log
-void DebugLog(const wchar_t *stage, const wchar_t *detail)
+// 用户刚在密码框里输入过的密码（只放内存，进程退出即消失）。
+// 有些归档只加密数据、不加密文件名，打开时 7-Zip 不会问密码；
+// 到"看图"才需要，这时用它补上，避免再问一次/拿空密码去解。
+struct RecentPassword
 {
-  // 默认就写日志（%LOCALAPPDATA%\7zip-custom\hook.log），出问题不用再让用户
-  // 设环境变量跑一遍；Z7CUSTOM_DEBUG 可以覆盖路径，设成 "-" 则关闭。
-  static std::wstring logPath;
-  static int enabled = -1;
-  if (enabled < 0)
+  std::wstring archive;
+  std::wstring password;
+};
+std::vector<RecentPassword> g_recentPasswords;
+SRWLOCK g_pwdLock = SRWLOCK_INIT;
+
+void RememberPassword(const wchar_t *archivePath, const wchar_t *password)
+{
+  if (!archivePath || !*archivePath || !password || !*password)
+    return;
+
+  ::AcquireSRWLockExclusive(&g_pwdLock);
+  for (auto &e : g_recentPasswords)
   {
-    wchar_t v[MAX_PATH * 2];
-    const DWORD n = ::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", v, (DWORD)(sizeof(v) / sizeof(v[0])));
-    if (n == 1 && v[0] == L'-')
+    if (::lstrcmpiW(e.archive.c_str(), archivePath) == 0)
     {
-      enabled = 0;
-    }
-    else
-    {
-      enabled = 1;
-      if (n > 1)
-        logPath.assign(v, n);
+      e.password = password;
+      ::ReleaseSRWLockExclusive(&g_pwdLock);
+      return;
     }
   }
-  if (!enabled)
-    return;
+  if (g_recentPasswords.size() >= 8)
+    g_recentPasswords.erase(g_recentPasswords.begin());
+  RecentPassword rp;
+  rp.archive = archivePath;
+  rp.password = password;
+  g_recentPasswords.push_back(rp);
+  ::ReleaseSRWLockExclusive(&g_pwdLock);
+}
+
+bool RecallPassword(const wchar_t *archivePath, std::wstring &out)
+{
+  if (!archivePath || !*archivePath)
+    return false;
+
+  bool hit = false;
+  ::AcquireSRWLockShared(&g_pwdLock);
+  for (const auto &e : g_recentPasswords)
+  {
+    if (::lstrcmpiW(e.archive.c_str(), archivePath) == 0)
+    {
+      out = e.password;
+      hit = true;
+      break;
+    }
+  }
+  ::ReleaseSRWLockShared(&g_pwdLock);
+  return hit;
+}
+
+// 默认开启：便携包写 data\hook.log，其余写 %LOCALAPPDATA%\7zip-custom\hook.log。
+// Z7CUSTOM_DEBUG=<路径> 可指定位置，设成 "-" 关闭。
+SRWLOCK g_logLock = SRWLOCK_INIT;
+std::wstring g_logFile;
+bool g_logResolved = false;
+
+std::wstring ResolveLogPath()
+{
+  wchar_t v[MAX_PATH * 2];
+  const DWORD n = ::GetEnvironmentVariableW(L"Z7CUSTOM_DEBUG", v,
+                                            (DWORD)(sizeof(v) / sizeof(v[0])));
+  if (n == 1 && v[0] == L'-')
+    return std::wstring();
+  if (n > 1)
+    return std::wstring(v, n);
 
   // 依次尝试几个位置，取第一个能写成功的
   std::vector<std::wstring> candidates;
-  if (!logPath.empty())
+  const std::wstring moduleDir = ModuleDir();
+
+  // 便携模式：exe 旁边有 data\ 就写到 data\hook.log，日志跟着包走
+  if (!moduleDir.empty())
   {
-    candidates.push_back(logPath);
-  }
-  else
-  {
-    wchar_t local[MAX_PATH] = {};
-    if (::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH) > 0)
-      candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
-    if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
-      candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
-    wchar_t tmp[MAX_PATH] = {};
-    if (::GetTempPathW(MAX_PATH, tmp) > 0)
-      candidates.push_back(std::wstring(tmp) + L"7zip-custom-hook.log");
-    candidates.push_back(ModuleDir() + L"hook.log");
+    const std::wstring dataDir = moduleDir + L"data";
+    const DWORD dataAttr = ::GetFileAttributesW(dataDir.c_str());
+    if (dataAttr != INVALID_FILE_ATTRIBUTES && (dataAttr & FILE_ATTRIBUTE_DIRECTORY))
+      candidates.push_back(dataDir + L"\\hook.log");
   }
 
-  HANDLE h = INVALID_HANDLE_VALUE;
+  wchar_t local[MAX_PATH] = {};
+  if (::GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH) > 0)
+    candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
+  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
+    candidates.push_back(std::wstring(local) + L"\\7zip-custom\\hook.log");
+  wchar_t tmp[MAX_PATH] = {};
+  if (::GetTempPathW(MAX_PATH, tmp) > 0)
+    candidates.push_back(std::wstring(tmp) + L"7zip-custom-hook.log");
+  if (!moduleDir.empty())
+    candidates.push_back(moduleDir + L"hook.log");
+
   for (const auto &c : candidates)
   {
     if (c.empty())
@@ -82,11 +133,49 @@ void DebugLog(const wchar_t *stage, const wchar_t *detail)
     if (slash != std::wstring::npos)
       ::CreateDirectoryW(c.substr(0, slash).c_str(), nullptr);
 
-    h = ::CreateFileW(c.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
-                      nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE h = ::CreateFileW(c.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h != INVALID_HANDLE_VALUE)
-      break;
+    {
+      ::CloseHandle(h);
+      return c;
+    }
   }
+  return std::wstring();
+}
+
+// 超过 1 MB 就换一个文件，只保留上一份，避免日志无限增长
+void RotateLogIfLarge(const std::wstring &path)
+{
+  WIN32_FILE_ATTRIBUTE_DATA fad = {};
+  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
+    return;
+  const unsigned long long size =
+      ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+  if (size < 1024ull * 1024ull)
+    return;
+  ::MoveFileExW(path.c_str(), (path + L".old").c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+void DebugLog(const wchar_t *stage, const wchar_t *detail)
+{
+  std::wstring path;
+  ::AcquireSRWLockExclusive(&g_logLock);
+  if (!g_logResolved)
+  {
+    g_logResolved = true;
+    g_logFile = ResolveLogPath();
+    if (!g_logFile.empty())
+      RotateLogIfLarge(g_logFile);
+  }
+  path = g_logFile;
+  ::ReleaseSRWLockExclusive(&g_logLock);
+  if (path.empty())
+    return;
+
+  HANDLE h = ::CreateFileW(path.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (h == INVALID_HANDLE_VALUE)
     return;
 
@@ -132,6 +221,140 @@ std::wstring ModuleDir()
   return p.substr(0, pos + 1);
 }
 
+// 诊断用：谁把 7zFM 拉起来的。explorer.exe/cmd.exe 才说明是正常双击启动，
+// Qoder/WorkBuddy 之类的宿主进程往往意味着受限上下文。
+std::wstring ParentProcessInfo()
+{
+  const DWORD myPid = ::GetCurrentProcessId();
+  DWORD parentPid = 0;
+  std::wstring name;
+
+  HANDLE snap = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snap != INVALID_HANDLE_VALUE)
+  {
+    PROCESSENTRY32W pe = {};
+    pe.dwSize = sizeof(pe);
+    if (::Process32FirstW(snap, &pe))
+    {
+      do
+      {
+        if (pe.th32ProcessID == myPid)
+        {
+          parentPid = pe.th32ParentProcessID;
+          break;
+        }
+      } while (::Process32NextW(snap, &pe));
+    }
+    if (parentPid)
+    {
+      pe.dwSize = sizeof(pe);
+      if (::Process32FirstW(snap, &pe))
+      {
+        do
+        {
+          if (pe.th32ProcessID == parentPid)
+          {
+            name = pe.szExeFile;
+            break;
+          }
+        } while (::Process32NextW(snap, &pe));
+      }
+    }
+    ::CloseHandle(snap);
+  }
+
+  if (name.empty())
+    return std::wstring();
+  wchar_t buf[128];
+  swprintf_s(buf, L"%s (pid %lu)", name.c_str(), (unsigned long)parentPid);
+  return buf;
+}
+
+std::wstring IntegrityLevelInfo()
+{
+  HANDLE tok = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &tok))
+    return L"(无法读取)";
+
+  DWORD len = 0;
+  ::GetTokenInformation(tok, TokenIntegrityLevel, nullptr, 0, &len);
+  std::vector<BYTE> buf(len);
+  std::wstring out = L"(未知)";
+  if (len && ::GetTokenInformation(tok, TokenIntegrityLevel, buf.data(), len, &len))
+  {
+    TOKEN_MANDATORY_LABEL *label = reinterpret_cast<TOKEN_MANDATORY_LABEL *>(buf.data());
+    const DWORD count = *::GetSidSubAuthorityCount(label->Label.Sid);
+    const DWORD rid = *::GetSidSubAuthority(label->Label.Sid, count - 1);
+    if (rid >= SECURITY_MANDATORY_SYSTEM_RID) out = L"System";
+    else if (rid >= SECURITY_MANDATORY_HIGH_RID) out = L"High";
+    else if (rid >= SECURITY_MANDATORY_MEDIUM_RID) out = L"Medium";
+    else if (rid >= SECURITY_MANDATORY_LOW_RID) out = L"Low";
+    else out = L"Untrusted";
+  }
+  ::CloseHandle(tok);
+  return out;
+}
+
+bool IsAppContainerProcess()
+{
+  HANDLE tok = nullptr;
+  if (!::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &tok))
+    return false;
+  // TokenIsAppContainer = 29；SDK 头文件会按 _WIN32_WINNT 裁剪，这里直接用数值
+  const TOKEN_INFORMATION_CLASS kTokenIsAppContainer = (TOKEN_INFORMATION_CLASS)29;
+  DWORD isAc = 0, len = 0;
+  const BOOL ok = ::GetTokenInformation(tok, kTokenIsAppContainer, &isAc, sizeof(isAc), &len);
+  ::CloseHandle(tok);
+  return ok && isAc != 0;
+}
+
+std::wstring JobInfo()
+{
+  BOOL inJob = FALSE;
+  if (!::IsProcessInJob(::GetCurrentProcess(), nullptr, &inJob) || !inJob)
+    return L"不在";
+
+  JOBOBJECT_BASIC_UI_RESTRICTIONS ui = {};
+  std::wstring r = L"在";
+  if (::QueryInformationJobObject(nullptr, JobObjectBasicUIRestrictions,
+                                  &ui, sizeof(ui), nullptr))
+  {
+    wchar_t b[64];
+    swprintf_s(b, L"，UI 限制=0x%lX", (unsigned long)ui.UIRestrictionsClass);
+    r += b;
+  }
+  return r;
+}
+
+// 从当前进程里真建一个目录再删掉——这比 GetFileAttributes 更能说明能不能写
+std::wstring WriteProbe(const std::wstring &dir)
+{
+  if (dir.empty())
+    return L"(无)";
+
+  wchar_t name[64];
+  swprintf_s(name, L"7z-custom-probe-%lu", (unsigned long)::GetCurrentProcessId());
+  std::wstring path = dir;
+  if (path.back() != L'\\')
+    path += L'\\';
+  path += name;
+
+  if (::CreateDirectoryW(path.c_str(), nullptr))
+  {
+    ::RemoveDirectoryW(path.c_str());
+    return L"可写";
+  }
+  const DWORD e = ::GetLastError();
+  if (e == ERROR_ALREADY_EXISTS)
+  {
+    ::RemoveDirectoryW(path.c_str());
+    return L"可写";
+  }
+  wchar_t b[64];
+  swprintf_s(b, L"拒绝 (err %lu)", (unsigned long)e);
+  return b;
+}
+
 } // namespace
 
 extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath,
@@ -154,7 +377,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath
     DebugLog(L"TryPassword.miss", loaded ? L"loaded" : vault.LastError().c_str());
     return 0;
   }
-  DebugLog(L"TryPassword.hit", pw.c_str());
+  DebugLog(L"TryPassword.hit", L"(from vault)");
+  RememberPassword(archivePath, pw.c_str());
   return CopyToBuf(pw, buf, cch) ? 1 : 0;
 }
 
@@ -190,6 +414,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AskPassword(void *owner,
   }
   const int r = fn(hOwner, archivePath, buf, cch);
   ::FreeLibrary(h);
+  if (r == 1)
+    RememberPassword(archivePath, buf);
   DebugLog(L"AskPassword", r == 1 ? L"ok" : (r < 0 ? L"cancelled" : L"unavailable"));
   return r;
 }
@@ -204,9 +430,9 @@ extern "C" void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *arch
 extern "C" int CUSTOM_HOOK_API CustomHook_TryPasswordForCurrent(wchar_t *buf, int cch)
 {
   std::wstring path;
-  ::AcquireSRWLockExclusive(&g_arcLock);
+  ::AcquireSRWLockShared(&g_arcLock);
   path = g_currentArchive;
-  ::ReleaseSRWLockExclusive(&g_arcLock);
+  ::ReleaseSRWLockShared(&g_arcLock);
 
   if (path.empty())
     return 0;
@@ -217,9 +443,9 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AskPasswordForCurrent(void *owner,
                                                                wchar_t *buf, int cch)
 {
   std::wstring path;
-  ::AcquireSRWLockExclusive(&g_arcLock);
+  ::AcquireSRWLockShared(&g_arcLock);
   path = g_currentArchive;
-  ::ReleaseSRWLockExclusive(&g_arcLock);
+  ::ReleaseSRWLockShared(&g_arcLock);
 
   if (path.empty())
     return 0;
@@ -232,10 +458,12 @@ extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *arc
   if (!archivePath || !*archivePath || !password || !*password)
     return;
 
+  RememberPassword(archivePath, password);
+
   ::AcquireSRWLockExclusive(&g_lock);
   custom::PasswordVault &vault = custom::PasswordVault::Instance();
-  vault.Load(false);
-  vault.Remember(archivePath, password);
+  if (vault.Load(false))
+    vault.Remember(archivePath, password);
   ::ReleaseSRWLockExclusive(&g_lock);
 }
 
@@ -252,7 +480,11 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   // 直接喂给它的，CFolderLink.Password 就是空的。所以这里必须自己再查一次库，
   // 否则加密包会拿空密码去解，必然失败。
   std::wstring pwd = password ? password : L"";
-  if (pwd.empty())
+  if (!pwd.empty())
+  {
+    RememberPassword(archivePath, pwd.c_str());
+  }
+  else
   {
     ::AcquireSRWLockExclusive(&g_lock);
     custom::PasswordVault &vault = custom::PasswordVault::Instance();
@@ -261,7 +493,13 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
     if (vault.FindForArchive(archivePath, found))
       pwd = found;
     ::ReleaseSRWLockExclusive(&g_lock);
-    DebugLog(L"TryOpenImage.pwd", pwd.empty() ? L"(vault miss)" : L"(from vault)");
+
+    bool fromCache = false;
+    if (pwd.empty())
+      fromCache = RecallPassword(archivePath, pwd);
+    DebugLog(L"TryOpenImage.pwd",
+             pwd.empty() ? L"(vault/cache miss)"
+                         : (fromCache ? L"(from dialog cache)" : L"(from vault)"));
   }
 
   // 自测时用：只准备文件，不真的调起看图程序
@@ -269,12 +507,57 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   const bool launch = ::GetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", nolaunch,
                                                 (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
 
-  const custom::PreviewResult r = custom::PrepareImagePreview(
+  custom::PreviewResult r = custom::PrepareImagePreview(
       archivePath, itemRelPath, pwd, launch);
+
+  // 只加密数据、不加密文件名的归档，打开时不会问密码；到预览才发现要密码。
+  // 这里弹一次我们自己的密码框，拿到密码后重试（成功后会记住）。
+  if (!r.ok && r.needsPassword && launch)
+  {
+    wchar_t asked[1024] = {};
+    const int a = CustomHook_AskPassword(::GetActiveWindow(), archivePath,
+                                         asked, (int)(sizeof(asked) / sizeof(asked[0])));
+    if (a == 1 && asked[0])
+    {
+      pwd = asked;
+      RememberPassword(archivePath, pwd.c_str());
+      DebugLog(L"TryOpenImage.pwd", L"(asked again)");
+      ::SecureZeroMemory(asked, sizeof(asked));
+      r = custom::PrepareImagePreview(archivePath, itemRelPath, pwd, launch);
+    }
+    else
+    {
+      ::SecureZeroMemory(asked, sizeof(asked));
+      if (a < 0)
+      {
+        DebugLog(L"TryOpenImage.needPwd", L"(cancelled)");
+        return 1;   // 用户取消：不要再让 7-Zip 弹它自己的密码框
+      }
+    }
+  }
+
+  if (!r.ok && r.needsPassword)
+    r.error = pwd.empty() ? L"归档已加密，需要密码" : L"归档已加密，密码不正确";
+
+  if (r.restrictedEnv)
+  {
+    std::wstring detail = L"预览目录只能用程序目录（完整性 ";
+    detail += IntegrityLevelInfo();
+    detail += L"）";
+    DebugLog(L"TryOpenImage.env", detail.c_str());
+  }
 
   DebugLog(L"TryOpenImage", r.ok ? r.openedPath.c_str() : r.error.c_str());
   if (!r.ok && !r.command.empty())
     DebugLog(L"TryOpenImage.cmd", r.command.c_str());
+  if (r.ok && !r.launcher.empty())
+  {
+    // 启动链自己报告走了哪一级、返回码多少：ShellExecute 返回 >32 不代表
+    // 窗口真的起来了，排查"看着成功其实没打开"时全靠这一行。
+    wchar_t code[32];
+    swprintf_s(code, L"%lld", r.launchCode);
+    DebugLog(L"TryOpenImage.launch", (r.launcher + L" -> " + code).c_str());
+  }
 
   if (r.ok)
     return 1;
@@ -288,16 +571,28 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
     std::wstring msg = L"预览这张图片失败：\n\n";
     msg += r.error.empty() ? L"(未知原因)" : r.error;
     if (!r.inprocError.empty())
+    {
       msg += L"\n\n（进程内解压失败原因：";
       msg += r.inprocError;
       msg += L"）";
+    }
     if (!r.command.empty())
     {
       msg += L"\n\n执行的命令：\n";
       msg += r.command;
     }
+    const std::wstring il = IntegrityLevelInfo();
+    if (il == L"Low" || il == L"Untrusted")
+      msg += L"\n\n当前程序的完整性级别是 " + il +
+             L"，在这种受限环境里无法启动外部程序。\n"
+             L"请从资源管理器里重新双击 7zFM.exe（不要从聊天窗口或 IDE 的文件预览启动）。";
+    else if (r.restrictedEnv)
+      msg += L"\n\n注意：当前进程写不了 %TEMP%（预览目录退到了程序目录），"
+             L"很可能是受限上下文启动的。\n"
+             L"请从资源管理器重新启动 7zFM.exe 后再试。";
     msg += L"\n\n（把这段截图发给开发者即可定位）";
-    ::MessageBoxW(nullptr, msg.c_str(), L"7-Zip 看图", MB_ICONWARNING);
+    HWND owner = ::GetActiveWindow();
+    ::MessageBoxW(owner ? owner : nullptr, msg.c_str(), L"7-Zip 看图", MB_ICONWARNING);
     return 1;
   }
 }
@@ -364,6 +659,19 @@ void ShowDiagnostics(HWND hwnd)
   msg += L"\n程序目录: ";
   msg += ModuleDir();
 
+  msg += L"\n父进程  : ";
+  {
+    const std::wstring parent = ParentProcessInfo();
+    msg += parent.empty() ? L"(未知，父进程可能已退出)" : parent;
+  }
+
+  msg += L"\n完整性  : ";
+  msg += IntegrityLevelInfo();
+  msg += L"\nAppContainer: ";
+  msg += IsAppContainerProcess() ? L"是" : L"否";
+  msg += L"\n作业对象: ";
+  msg += JobInfo();
+
   const std::wstring sevenZip = ModuleDir() + L"7z.exe";
   const DWORD a = ::GetFileAttributesW(sevenZip.c_str());
   msg += L"\n7z.exe  : ";
@@ -373,9 +681,18 @@ void ShowDiagnostics(HWND hwnd)
   ::GetTempPathW(MAX_PATH, tmp);
   msg += L"\n临时目录: ";
   msg += tmp;
+  msg += L"\nTEMP 写入: ";
+  msg += WriteProbe(tmp);
 
   msg += L"\n密码库  : ";
   msg += custom::VaultDir();
+
+  wchar_t localPath[MAX_PATH] = {};
+  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, localPath) == S_OK)
+  {
+    msg += L"\nLOCALAPPDATA 写入: ";
+    msg += WriteProbe(localPath);
+  }
 
   // 能否启动外部程序（看图要靠它）——受限环境会在这里失败
   msg += L"\n启动外部程序: ";
@@ -408,7 +725,14 @@ void ShowDiagnostics(HWND hwnd)
   }
 
   msg += L"\n日志    : ";
-  msg += ModuleDir() + L"hook.log（或 %LOCALAPPDATA%\\7zip-custom\\hook.log）";
+  {
+    const std::wstring dataDir = ModuleDir() + L"data";
+    const DWORD da = ::GetFileAttributesW(dataDir.c_str());
+    if (da != INVALID_FILE_ATTRIBUTES && (da & FILE_ATTRIBUTE_DIRECTORY))
+      msg += dataDir + L"\\hook.log（便携）";
+    else
+      msg += ModuleDir() + L"hook.log（或 %LOCALAPPDATA%\\7zip-custom\\hook.log）";
+  }
 
   ::MessageBoxW(hwnd, msg.c_str(), L"7zip-custom 诊断", MB_ICONINFORMATION);
 }
@@ -498,4 +822,12 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
 extern "C" void CUSTOM_HOOK_API CustomHook_OnArchiveOpened(const wchar_t *archivePath)
 {
   (void)archivePath;
+}
+
+extern "C" void CUSTOM_HOOK_API CustomHook_OnArchiveClosed(const wchar_t *archivePath)
+{
+  if (!archivePath || !*archivePath)
+    return;
+  DebugLog(L"ArchiveClosed", archivePath);
+  custom::CleanupArchivePreview(archivePath);
 }

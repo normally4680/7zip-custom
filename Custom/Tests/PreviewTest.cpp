@@ -10,6 +10,7 @@
 extern "C" int __cdecl CustomHook_TryOpenImage(const wchar_t *archivePath,
                                                const wchar_t *itemRelPath,
                                                const wchar_t *password);
+extern "C" void __cdecl CustomHook_OnArchiveClosed(const wchar_t *archivePath);
 
 #include <windows.h>
 
@@ -52,10 +53,67 @@ int wmain(int argc, wchar_t **argv)
 {
   ::SetConsoleOutputCP(CP_UTF8);
 
+  if (argc < 2)
+  {
+    printf("usage: PreviewTest.exe <archive> <inner-path> [password]\n");
+    return 2;
+  }
+
+  // 路径校验的纯逻辑测试，不需要归档
+  if (wcscmp(argv[1], L"--sanitize") == 0)
+  {
+    struct Case { const wchar_t *path; bool safe; };
+    const Case cases[] = {
+      { L"a.png", true },
+      { L"dir\\a.png", true },
+      { L"dir/sub/b.jpg", true },
+      { L"../a.png", false },
+      { L"dir/../../a.png", false },
+      { L"\\abs\\a.png", false },
+      { L"C:\\a.png", false },
+      { L"dir\\a.png:stream", false },
+    };
+    int fails = 0;
+    for (const Case &c : cases)
+    {
+      const bool got = custom::IsSafeInnerPath(c.path);
+      if (got != c.safe)
+      {
+        printf("FAIL: %s -> %d (want %d)\n", Utf8(c.path).c_str(), (int)got, (int)c.safe);
+        ++fails;
+      }
+    }
+    printf("sanitize: %d cases, %d failed\n", (int)(sizeof(cases) / sizeof(cases[0])), fails);
+    return fails ? 1 : 0;
+  }
+
   if (argc < 3)
   {
     printf("usage: PreviewTest.exe <archive> <inner-path> [password]\n");
     return 2;
+  }
+
+  if (wcscmp(argv[1], L"--cleanup") == 0 && argc >= 3)
+  {
+    CustomHook_OnArchiveClosed(argv[2]);
+    printf("cleanup done\n");
+    return 0;
+  }
+
+  // 先用错误密码解一次（应当失败且不留下残缺文件），再用正确密码重试
+  if (wcscmp(argv[1], L"--retry") == 0 && argc >= 6)
+  {
+    const custom::PreviewResult bad =
+        custom::PrepareImagePreview(argv[2], argv[3], argv[4], false);
+    const custom::PreviewResult good =
+        custom::PrepareImagePreview(argv[2], argv[3], argv[5], false);
+    const bool pass = !bad.ok && good.ok && !good.openedPath.empty();
+    printf("wrong password: ok=%d needsPassword=%d error=%s\n",
+           (int)bad.ok, (int)bad.needsPassword, Utf8(bad.error).c_str());
+    printf("right password: ok=%d opened=%s\n",
+           (int)good.ok, Utf8(good.openedPath).c_str());
+    printf("%s\n", pass ? "PASS" : "FAIL");
+    return pass ? 0 : 1;
   }
 
   if (wcscmp(argv[1], L"--inproc") == 0 && argc >= 4)
@@ -63,22 +121,27 @@ int wmain(int argc, wchar_t **argv)
     std::vector<std::wstring> exts = { L"bmp", L"png", L"jpg" };
     int count = 0;
     std::wstring err;
+    bool pwdRequested = false;
     const std::wstring pwd = (argc >= 5) ? argv[4] : L"";
     const bool ok = custom::ExtractImagesInProcess(L"7z.dll", argv[2], L"风景", pwd, argv[3],
-                                                   exts, count, err);
-    printf("inproc ok=%d count=%d error=%s\n", (int)ok, count, Utf8(err).c_str());
+                                                   exts, count, err, pwdRequested);
+    printf("inproc ok=%d count=%d pwdreq=%d error=%s\n",
+           (int)ok, count, (int)pwdRequested, Utf8(err).c_str());
     return ok ? 0 : 1;
   }
 
   const bool viaHook = (wcscmp(argv[1], L"--via-hook") == 0);
-  if (viaHook)
+  const bool viaHookLaunch = (wcscmp(argv[1], L"--via-hook-launch") == 0);
+  if (viaHook || viaHookLaunch)
   {
     if (argc < 4)
     {
-      printf("usage: PreviewTest.exe --via-hook <archive> <inner-path>\n");
+      printf("usage: PreviewTest.exe --via-hook [--via-hook-launch] <archive> <inner-path>\n");
       return 2;
     }
-    ::SetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", L"1");
+    // --via-hook 只准备文件；--via-hook-launch 连"调起看图程序"一起测
+    if (viaHook)
+      ::SetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", L"1");
     const int r = CustomHook_TryOpenImage(argv[2], argv[3], nullptr);  // 故意不传密码
     printf("hook returned %d (%s)\n", r, r == 1 ? "handled" : "fallback to 7-Zip");
     return r == 1 ? 0 : 1;
