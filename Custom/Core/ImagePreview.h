@@ -4,10 +4,8 @@
 // 再把用户点的那张交给系统默认看图程序（Honeyview / 照片 …）。
 // 看图软件自己按"同目录兄弟文件"实现滚轮翻页，于是就能翻遍整包图片。
 //
-// 为什么用 7z.exe 而不是 7z.dll：
-//   * 复用的是同一个引擎，行为和解压完全一致（含加密、分卷、嵌套）
-//   * 不用在我们这边重新实现 IInArchive / IArchiveExtractCallback
-//   * 代价是进程启动开销（几十毫秒），对"看一张图"完全可接受
+// 解压优先在进程内直接用 7z.dll 完成；只有进程内失败时才退回 7z.exe。
+// 进程内方式不启动子进程，也不需要把密码放进命令行。
 
 #ifndef CUSTOM_IMAGE_PREVIEW_H
 #define CUSTOM_IMAGE_PREVIEW_H
@@ -28,9 +26,20 @@ struct PreviewResult
   bool envError = false;
   std::wstring inprocError;  // 进程内解压失败的原因（诊断用）
   std::wstring command;      // 实际调用的 7z.exe 命令行（排错用）
+  std::wstring launcher;     // 走通了哪一级启动链（诊断用）
+  long long launchCode = 0;  // ShellExecute 返回码，或 CreateProcess 成功的 42
+  // true = %TEMP% / %LOCALAPPDATA% 都不可写，预览目录退到了程序目录，
+  // 通常意味着进程被受限上下文启动（启动外部程序会静默失败）
+  bool restrictedEnv = false;
+  // true = 归档加密，进程内解压时要过密码（密码为空或错误时需要弹框重试）
+  bool needsPassword = false;
 };
 
 bool IsImageFile(const wchar_t *name);
+
+// 归档内路径的安全校验：拒绝绝对路径、盘符、"."/".." 组件和冒号（NTFS 数据流），
+// 防止恶意归档把预览文件写到临时目录之外。
+bool IsSafeInnerPath(const std::wstring &rel);
 
 // innerRelPath : 归档内相对路径，用 '/' 或 '\' 分隔都行
 // password     : 可以为空；空的时候用空密码试，失败就返回 false 让 7-Zip 走原流程
@@ -42,6 +51,9 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
 
 // 清理超过 maxAgeHours 的预览目录
 void CleanupPreviewDirs(int maxAgeHours);
+
+// 归档关闭时调用：删除这个归档的整个预览目录
+void CleanupArchivePreview(const std::wstring &archivePath);
 
 } // namespace custom
 

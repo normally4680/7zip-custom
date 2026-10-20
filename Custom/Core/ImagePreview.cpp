@@ -11,6 +11,7 @@
 #include <cstdio>
 
 #include <cstdint>
+#include <cwctype>
 #include <vector>
 
 namespace custom {
@@ -22,8 +23,6 @@ const wchar_t * const kImageExts[] = {
   L"jpg", L"jpeg", L"jpe", L"png", L"gif", L"bmp", L"webp",
   L"tif", L"tiff", L"ico", L"jxl", L"avif", L"heic", L"heif", L"psd"
 };
-
-const int kMaxFilesPerDir = 2000;
 
 std::wstring ModuleDir()
 {
@@ -47,7 +46,7 @@ std::wstring Join3(const std::wstring &a, const wchar_t *b, const wchar_t *c)
 }
 
 // 优先 %TEMP%，不行再退到 %LOCALAPPDATA%（少数环境 TEMP 被策略禁写）
-bool EnsureTempRoot(std::wstring &root, std::wstring &error)
+bool EnsureTempRoot(std::wstring &root, std::wstring &error, bool &restricted)
 {
   std::vector<std::wstring> bases;
   wchar_t buf[MAX_PATH];
@@ -60,12 +59,16 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
     bases.push_back(std::wstring(local) + L"\\");
 
   // 再加一个"程序目录"，某些受限环境只允许写这里
-  bases.push_back(ModuleDir());
+  const std::wstring moduleDir = ModuleDir();
+  if (!moduleDir.empty())
+    bases.push_back(moduleDir);
 
   DWORD lastError = 0;
-  for (const auto &b : bases)
+  for (size_t i = 0; i < bases.size(); ++i)
   {
-    const std::wstring base = Join3(b, L"7zip-custom", L"");
+    if (bases[i].empty())
+      continue;
+    const std::wstring base = Join3(bases[i], L"7zip-custom", L"");
     std::wstring candidate = base;
     if (!candidate.empty() && candidate.back() != L'\\')
       candidate += L'\\';
@@ -77,10 +80,17 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
     {
       // 还要真能往下写：某些沙箱里"目录存在"但子目录建不了
       const std::wstring probe = candidate + L"\\.writetest";
-      if (::CreateDirectoryW(probe.c_str(), nullptr))
+      bool writable = ::CreateDirectoryW(probe.c_str(), nullptr) != FALSE;
+      // 上次崩溃留下的探测目录，说明这里本来就能写
+      if (!writable && ::GetLastError() == ERROR_ALREADY_EXISTS)
+        writable = true;
+      if (writable)
       {
         ::RemoveDirectoryW(probe.c_str());
         root = candidate + L"\\";
+        // 连 %TEMP% 和 %LOCALAPPDATA% 都写不了、只能退到程序目录时，
+        // 基本可以断定进程被受限上下文启动（此时启动外部程序通常也会静默失败）。
+        restricted = (i + 1 == bases.size());
         return true;
       }
       lastError = ::GetLastError();
@@ -92,8 +102,8 @@ bool EnsureTempRoot(std::wstring &root, std::wstring &error)
   wchar_t msg[512];
   swprintf_s(msg,
       L"没有可写的预览目录（最后一次错误码 %lu）。\n"
-      L"如果你是从聊天窗口的文件卡片启动本程序的，请改成在资源管理器里双击 run.bat，"
-      L"受限环境不允许写临时目录。", (unsigned long)lastError);
+      L"当前运行环境不允许写临时目录，请把程序解压到普通文件夹后，"
+      L"从资源管理器里双击 7zFM.exe 再试。", (unsigned long)lastError);
   error = msg;
   return false;
 }
@@ -116,6 +126,27 @@ std::wstring Hex(uint32_t v)
   return buf;
 }
 
+// 预览目录按归档路径命名。打开和关闭归档时拿到的路径可能在大小写/斜杠/
+// 尾部分隔符上略有差别，先规范化再哈希，否则关闭时会删不到。
+std::wstring ArchiveTempKey(const std::wstring &archivePath)
+{
+  // 统一转成绝对路径（7zFM 给的是绝对路径；测试/命令行可能给相对路径），
+  // 再统一大小写和分隔符，保证"打开"和"关闭"算出来的键一致。
+  std::wstring norm;
+  wchar_t full[MAX_PATH * 2] = {};
+  const DWORD n = ::GetFullPathNameW(archivePath.c_str(),
+      (DWORD)(sizeof(full) / sizeof(full[0])), full, nullptr);
+  if (n > 0 && n < sizeof(full) / sizeof(full[0]))
+    norm.assign(full, n);
+  if (norm.empty())
+    norm = archivePath;
+  while (norm.size() > 1 && (norm.back() == L'\\' || norm.back() == L'/'))
+    norm.pop_back();
+  for (auto &c : norm)
+    c = (wchar_t)::towlower(c);
+  return Hex(Fnv1a(norm));
+}
+
 std::wstring Join(const std::wstring &a, const std::wstring &b)
 {
   if (a.empty())
@@ -131,6 +162,35 @@ bool FileExists(const std::wstring &path)
 {
   const DWORD a = ::GetFileAttributesW(path.c_str());
   return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+unsigned long long FileSize(const std::wstring &path)
+{
+  WIN32_FILE_ATTRIBUTE_DATA fad = {};
+  if (!::GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad))
+    return 0;
+  if (fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+    return 0;
+  return ((unsigned long long)fad.nFileSizeHigh << 32) | fad.nFileSizeLow;
+}
+
+// 提取失败/密码错误时，7z 可能留下 0 字节或写了一半的文件。
+// 只有非空文件才能当作"已经解压好"的缓存。
+bool IsUsableFile(const std::wstring &path)
+{
+  return FileSize(path) > 0;
+}
+
+// 缓存文件比归档还旧，说明归档被重新生成过，继续用会显示旧图。
+bool CacheStillValid(const std::wstring &archive, const std::wstring &target)
+{
+  if (!IsUsableFile(target))
+    return false;
+  WIN32_FILE_ATTRIBUTE_DATA fa = {}, ft = {};
+  if (!::GetFileAttributesExW(archive.c_str(), GetFileExInfoStandard, &fa) ||
+      !::GetFileAttributesExW(target.c_str(), GetFileExInfoStandard, &ft))
+    return true;   // 判断不了就按旧的用，最多重解一次
+  return ::CompareFileTime(&fa.ftLastWriteTime, &ft.ftLastWriteTime) <= 0;
 }
 
 void SplitInnerPath(const std::wstring &rel, std::wstring &dir, std::wstring &name)
@@ -190,20 +250,23 @@ std::wstring EnsureHelperExe()
   const std::wstring dstExe = dir + L"\\7z.exe";
   const std::wstring dstDll = dir + L"\\7z.dll";
 
-  // 大小不一致就重新复制（构建后二进制会变）
-  const auto sameSize = [](const std::wstring &a, const std::wstring &b)
+  // 大小或修改时间不一致就重新复制（构建后二进制会变）
+  const auto sameFile = [](const std::wstring &a, const std::wstring &b)
   {
     WIN32_FILE_ATTRIBUTE_DATA fa = {}, fb = {};
     if (!::GetFileAttributesExW(a.c_str(), GetFileExInfoStandard, &fa) ||
         !::GetFileAttributesExW(b.c_str(), GetFileExInfoStandard, &fb))
       return false;
-    return fa.nFileSizeHigh == fb.nFileSizeHigh && fa.nFileSizeLow == fb.nFileSizeLow;
+    return fa.nFileSizeHigh == fb.nFileSizeHigh &&
+           fa.nFileSizeLow == fb.nFileSizeLow &&
+           fa.ftLastWriteTime.dwHighDateTime == fb.ftLastWriteTime.dwHighDateTime &&
+           fa.ftLastWriteTime.dwLowDateTime == fb.ftLastWriteTime.dwLowDateTime;
   };
 
-  if (!sameSize(srcExe, dstExe))
+  if (!sameFile(srcExe, dstExe))
     if (!::CopyFileW(srcExe.c_str(), dstExe.c_str(), FALSE))
       return srcExe;
-  if (!sameSize(srcDll, dstDll))
+  if (!sameFile(srcDll, dstDll))
     if (!::CopyFileW(srcDll.c_str(), dstDll.c_str(), FALSE))
       return srcExe;
 
@@ -214,15 +277,27 @@ std::wstring EnsureHelperExe()
 // ShellExecute 就会一直失败。这里自己找看图软件：先看配置，再看常见安装位置。
 std::wstring ReadConfigValue(const wchar_t *key)
 {
-  wchar_t local[MAX_PATH] = {};
-  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) != S_OK)
-    return std::wstring();
-  std::wstring ini = std::wstring(local) + L"\\7zip-custom\\config.ini";
+  std::vector<std::wstring> inis;
 
-  wchar_t buf[MAX_PATH * 2] = {};
-  ::GetPrivateProfileStringW(L"viewer", key, L"", buf,
-                             (DWORD)(sizeof(buf) / sizeof(buf[0])), ini.c_str());
-  return buf;
+  // 便携模式：优先读 exe 同目录的 config.ini
+  const std::wstring portableIni = ModuleDir() + L"config.ini";
+  const DWORD attr = ::GetFileAttributesW(portableIni.c_str());
+  if (attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY))
+    inis.push_back(portableIni);
+
+  wchar_t local[MAX_PATH] = {};
+  if (::SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, local) == S_OK)
+    inis.push_back(std::wstring(local) + L"\\7zip-custom\\config.ini");
+
+  for (const auto &ini : inis)
+  {
+    wchar_t buf[MAX_PATH * 2] = {};
+    ::GetPrivateProfileStringW(L"viewer", key, L"", buf,
+                               (DWORD)(sizeof(buf) / sizeof(buf[0])), ini.c_str());
+    if (buf[0])
+      return buf;
+  }
+  return std::wstring();
 }
 
 bool FileExistsSimple(const std::wstring &p)
@@ -280,8 +355,26 @@ std::wstring FindImageViewer()
   return std::wstring();
 }
 
+bool HasVisibleTopWindow(DWORD pid)
+{
+  struct Context { DWORD pid; bool found; } ctx = { pid, false };
+  ::EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+    Context *c = reinterpret_cast<Context *>(lp);
+    DWORD p = 0;
+    ::GetWindowThreadProcessId(h, &p);
+    if (p == c->pid && ::IsWindowVisible(h))
+    {
+      c->found = true;
+      return FALSE;
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&ctx));
+  return ctx.found;
+}
+
 // 用系统自带的"Windows 照片查看器"打开（不需要文件关联）。
-// 这台机器上 .bmp/.jpg/.png 都没关联程序，但 PhotoViewer.dll 是存在的。
+// CreateProcess 成功不代表窗口真的出来了：受限上下文里子进程可能被静默丢弃，
+// 所以这里要等到可见窗口才敢说成功。
 bool TryWindowsPhotoViewer(const std::wstring &file)
 {
   wchar_t pf[MAX_PATH] = {};
@@ -297,14 +390,32 @@ bool TryWindowsPhotoViewer(const std::wstring &file)
   std::wstring exe = std::wstring(sys) + L"\\" + L"rundll" + L"32.exe";
 
   std::wstring cmd = L"\"" + exe + L"\" \"" + dll + L"\", ImageView_Fullscreen \"" + file + L"\"";
+  const size_t slash = file.find_last_of(L'\\');
+  const std::wstring workDir = (slash == std::wstring::npos) ? std::wstring()
+                                                             : file.substr(0, slash);
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
   PROCESS_INFORMATION pi = {};
-  if (!::CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+  if (!::CreateProcessW(nullptr, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr,
+                        workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
     return false;
   ::CloseHandle(pi.hThread);
+
+  bool shown = false;
+  for (int i = 0; i < 30; ++i)   // 最多等 3 秒
+  {
+    if (::WaitForSingleObject(pi.hProcess, 100) == WAIT_OBJECT_0)
+      break;                     // 进程已退出 = 没开起来
+    if (HasVisibleTopWindow(pi.dwProcessId))
+    {
+      shown = true;
+      break;
+    }
+  }
+  if (!shown && ::WaitForSingleObject(pi.hProcess, 0) == WAIT_TIMEOUT)
+    ::TerminateProcess(pi.hProcess, 0);   // 活着却不肯显示窗口，别留孤儿进程
   ::CloseHandle(pi.hProcess);
-  return true;
+  return shown;
 }
 
 bool LaunchWithExe(const std::wstring &exe, const std::wstring &file, const std::wstring &dir)
@@ -373,31 +484,126 @@ bool LaunchByAssociation(const std::wstring &file)
   return true;
 }
 
-// 先 ShellExecute（走默认语义），失败再退回"按关联命令直接起"
-INT_PTR LaunchViewer(const std::wstring &file, const std::wstring &dir)
+// 错误框/日志里不要把密码原样带出去
+std::wstring MaskPassword(const std::wstring &cmd, const std::wstring &pwd)
 {
+  if (pwd.empty())
+    return cmd;
+  const std::wstring needle = L"-p\"" + pwd + L"\"";
+  std::wstring out = cmd;
+  size_t pos = 0;
+  while ((pos = out.find(needle, pos)) != std::wstring::npos)
+  {
+    out.replace(pos, needle.size(), L"-p\"***\"");
+    pos += 7;
+  }
+  return out;
+}
+
+// 启动看图程序期间把工作目录切到预览临时目录，避免子进程（尤其是 UWP 照片）
+// 继承 7zFM 的工作目录——直接双击便携包里的 7zFM.exe 时，那就是包目录，
+// 会导致关闭 7zFM 后包目录仍被看图程序占用、删不掉。
+class ScopedCurrentDir
+{
+public:
+  explicit ScopedCurrentDir(const std::wstring &dir)
+  {
+    wchar_t buf[MAX_PATH * 2] = {};
+    const DWORD n = ::GetCurrentDirectoryW((DWORD)(sizeof(buf) / sizeof(buf[0])), buf);
+    if (n > 0 && n < (DWORD)(sizeof(buf) / sizeof(buf[0])))
+    {
+      old_.assign(buf, n);
+      have_ = true;
+    }
+    if (!dir.empty())
+      ::SetCurrentDirectoryW(dir.c_str());
+  }
+  ~ScopedCurrentDir()
+  {
+    if (have_)
+      ::SetCurrentDirectoryW(old_.c_str());
+  }
+private:
+  std::wstring old_;
+  bool have_ = false;
+};
+
+// 先 ShellExecute（走默认语义），失败再退回"按关联命令直接起"
+INT_PTR LaunchViewer(const std::wstring &file, const std::wstring &dir, std::wstring &how)
+{
+  ScopedCurrentDir cwdGuard(dir);
   // 1) 自己找到的看图软件（不依赖文件关联）
   {
     const std::wstring viewer = FindImageViewer();
-    if (!viewer.empty() && LaunchWithExe(viewer, file, dir))
-      return 42;
+    if (!viewer.empty())
+    {
+      if (LaunchWithExe(viewer, file, dir))
+      {
+        how = L"viewer " + viewer;
+        return 42;
+      }
+      how = L"viewer-failed " + viewer;
+    }
   }
 
   // 2) 系统关联
   const INT_PTR se = (INT_PTR)::ShellExecuteW(nullptr, L"open", file.c_str(),
                                               nullptr, dir.c_str(), SW_SHOWNORMAL);
   if (se > 32)
+  {
+    how = L"shell";
     return se;
+  }
 
   // 3) 关联里登记的命令行
   if (LaunchByAssociation(file))
+  {
+    how = L"assoc-cmd";
     return 42;
+  }
 
   // 4) 系统自带照片查看器（不依赖关联）
   if (TryWindowsPhotoViewer(file))
+  {
+    how = L"photoviewer";
     return 42;
+  }
 
+  how += how.empty() ? L"none" : L";none";
   return se;
+}
+
+// 文件已经解出来后统一处理"调起看图程序"，失败时填好用户能看懂的错误。
+bool LaunchAndReport(PreviewResult &r, const std::wstring &file, const std::wstring &dir)
+{
+  std::wstring how;
+  const INT_PTR se = LaunchViewer(file, dir, how);
+  r.launcher = how;
+  r.launchCode = (long long)se;
+  if (se > 32)
+    return true;
+
+  r.ok = false;
+  wchar_t msg[768];
+  if (se == 5)
+  {
+    swprintf_s(msg,
+        L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
+        L"当前进程被禁止启动外部程序，不是文件关联问题。\n"
+        L"请确认 7zFM 是从资源管理器双击启动的，而不是从聊天窗口 / IDE 的文件预览启动。\n"
+        L"如果确实需要指定看图程序，可在程序目录的 config.ini 写：\n"
+        L"  [viewer]\n  path=C:\\Program Files\\Honeyview\\Honeyview.exe");
+  }
+  else
+  {
+    swprintf_s(msg,
+        L"无法启动看图软件（ShellExecute 返回 %lld）。\n"
+        L"31 = 没有关联程序；建议安装 Honeyview，或在程序目录的 config.ini 里指定 "
+        L"[viewer] path。",
+        (long long)se);
+  }
+  r.error = msg;
+  return false;
 }
 
 bool RunAndWait(const std::wstring &cmd, DWORD &exitCode, std::wstring &output)
@@ -407,7 +613,11 @@ bool RunAndWait(const std::wstring &cmd, DWORD &exitCode, std::wstring &output)
   {
     wchar_t tmp[MAX_PATH] = {};
     if (::GetTempPathW(MAX_PATH, tmp) > 0)
-      outPath = std::wstring(tmp) + L"7zip-custom-7z.log";
+    {
+      wchar_t name[64];
+      swprintf_s(name, L"7zip-custom-7z-%lu.log", (unsigned long)::GetCurrentProcessId());
+      outPath = std::wstring(tmp) + name;
+    }
   }
 
   SECURITY_ATTRIBUTES sa = {};
@@ -492,10 +702,63 @@ bool IsImageFile(const wchar_t *name)
   return false;
 }
 
+bool IsSafeInnerPath(const std::wstring &rel)
+{
+  if (rel.empty())
+    return false;
+  if (rel[0] == L'\\' || rel[0] == L'/' || rel[0] == L':')
+    return false;
+  if (rel.size() >= 2 && rel[1] == L':')
+    return false;
+
+  size_t start = 0;
+  while (start <= rel.size())
+  {
+    size_t end = rel.find_first_of(L"\\/", start);
+    if (end == std::wstring::npos)
+      end = rel.size();
+    const std::wstring part = rel.substr(start, end - start);
+    if (part == L".." || part == L".")
+      return false;
+    // 冒号会让 CreateFile 把后面当成 NTFS 数据流
+    if (part.find(L':') != std::wstring::npos)
+      return false;
+    if (end == rel.size())
+      break;
+    start = end + 1;
+  }
+  return true;
+}
+
+void DeleteTree(const std::wstring &path)
+{
+  WIN32_FIND_DATAW fd;
+  HANDLE h = ::FindFirstFileW((path + L"\\*").c_str(), &fd);
+  if (h != INVALID_HANDLE_VALUE)
+  {
+    do
+    {
+      if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
+        continue;
+      const std::wstring child = path + L"\\" + fd.cFileName;
+      if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        DeleteTree(child);
+      else
+      {
+        ::SetFileAttributesW(child.c_str(), FILE_ATTRIBUTE_NORMAL);
+        ::DeleteFileW(child.c_str());
+      }
+    } while (::FindNextFileW(h, &fd));
+    ::FindClose(h);
+  }
+  ::RemoveDirectoryW(path.c_str());
+}
+
 void CleanupPreviewDirs(int maxAgeHours)
 {
   std::wstring root, err;
-  if (!EnsureTempRoot(root, err))
+  bool restricted = false;
+  if (!EnsureTempRoot(root, err, restricted))
     return;
 
   FILETIME now;
@@ -524,28 +787,25 @@ void CleanupPreviewDirs(int maxAgeHours)
     const unsigned long long maxAge = (unsigned long long)maxAgeHours * 3600ull * 10000000ull;
     if (age100ns > maxAge)
     {
-      // 目录里都是解出来的临时文件，直接删
-      std::wstring dir = Join(root, fd.cFileName);
-      std::wstring files = dir + L"\\*";
-      WIN32_FIND_DATAW f2;
-      HANDLE h2 = ::FindFirstFileW(files.c_str(), &f2);
-      if (h2 != INVALID_HANDLE_VALUE)
-      {
-        do
-        {
-          if (!(f2.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-          {
-            ::SetFileAttributesW(Join(dir, f2.cFileName).c_str(), FILE_ATTRIBUTE_NORMAL);
-            ::DeleteFileW(Join(dir, f2.cFileName).c_str());
-          }
-        } while (::FindNextFileW(h2, &f2));
-        ::FindClose(h2);
-      }
-      ::RemoveDirectoryW(dir.c_str());
+      // 每个子目录是一个归档的预览根，里面可能还有内部目录层级
+      DeleteTree(Join(root, fd.cFileName));
     }
   } while (::FindNextFileW(h, &fd));
 
   ::FindClose(h);
+}
+
+void CleanupArchivePreview(const std::wstring &archivePath)
+{
+  if (archivePath.empty())
+    return;
+
+  std::wstring root, err;
+  bool restricted = false;
+  if (!EnsureTempRoot(root, err, restricted))
+    return;
+
+  DeleteTree(root + ArchiveTempKey(archivePath));
 }
 
 PreviewResult PrepareImagePreview(const std::wstring &archivePath,
@@ -577,168 +837,150 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
     r.error = L"不是图片";
     return r;
   }
+  if (!IsSafeInnerPath(inner))
+  {
+    r.error = L"条目路径不安全，已拒绝";
+    return r;
+  }
 
   std::wstring root;
-  if (!EnsureTempRoot(root, r.error))
+  if (!EnsureTempRoot(root, r.error, r.restrictedEnv))
   {
     r.envError = true;
     return r;
   }
 
-  // 同一个归档的同一个目录复用同一个临时目录，第二次看就是瞬间打开
-  const std::wstring key = archivePath + L"|" + innerDir;
-  std::wstring dir = root + Hex(Fnv1a(key));
+  // 同一个归档的所有目录共用一个临时根：关闭归档时整目录删除。
+  // 内部目录仍然保留在路径里，看图软件按同目录兄弟翻页。
+  std::wstring dir = root + ArchiveTempKey(archivePath);
   r.tempDir = dir;
 
   std::wstring target = Join(Join(dir, innerDir), fileName);
+  const std::wstring outSubDir = Join(dir, innerDir);
 
-  if (!FileExists(target))
+  // 上次密码错误/解压中断可能留下 0 字节文件，不能当成"已经解压好"。
+  if (CacheStillValid(archivePath, target))
   {
-    ::CreateDirectoryW(root.c_str(), nullptr);
-    ::CreateDirectoryW(dir.c_str(), nullptr);
+    r.openedPath = target;
+    r.extracted = CountFiles(outSubDir);
+    r.ok = true;
+    if (launch)
+      LaunchAndReport(r, target, dir);
+    return r;
+  }
+  DeleteTree(outSubDir);
 
-    CleanupPreviewDirs(72);
+  ::CreateDirectoryW(root.c_str(), nullptr);
+  ::CreateDirectoryW(dir.c_str(), nullptr);
 
-    // 首选：进程内用 7z.dll 解压（不启动子进程，绕开一堆环境问题）
+  CleanupPreviewDirs(72);
+
+  // 首选：进程内用 7z.dll 解压（不启动子进程，绕开一堆环境问题）
+  {
+    std::vector<std::wstring> extList;
+    for (const wchar_t *e : kImageExts)
+      extList.push_back(e);
+
+    int count = 0;
+    std::wstring ipError;
+    bool pwdRequested = false;
+    const std::wstring dll = ModuleDir() + L"7z.dll";
+    if (ExtractImagesInProcess(dll.c_str(), archivePath, innerDir, password, dir,
+                               extList, count, ipError, pwdRequested) &&
+        IsUsableFile(target))
     {
-      std::vector<std::wstring> extList;
-      for (const wchar_t *e : kImageExts)
-        extList.push_back(e);
-
-      int count = 0;
-      std::wstring ipError;
-      const std::wstring dll = ModuleDir() + L"7z.dll";
-      if (ExtractImagesInProcess(dll.c_str(), archivePath, innerDir, password, dir,
-                                 extList, count, ipError) && FileExists(target))
-      {
-        r.openedPath = target;
-        r.extracted = count;
-        r.ok = true;
-        if (launch)
-        {
-          const INT_PTR se = LaunchViewer(target, dir);
-          if (se <= 32)
-          {
-            r.ok = false;
-            wchar_t msg[768];
-            if (se == 5)
-            {
-              swprintf_s(msg,
-                  L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
-                  L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
-                  L"这台机器上图片扩展名可能没有关联程序。\n"
-                  L"请在 %%LOCALAPPDATA%%\\7zip-custom\\config.ini 里写：\n"
-                  L"  [viewer]\n  path=C:////Program Files\\Honeyview\\Honeyview.exe");
-            }
-            else
-            {
-              swprintf_s(msg,
-                  L"无法启动看图软件（ShellExecute 返回 %lld）。\n"
-                  L"31 = 没有关联程序；建议把 .bmp/.png 关联到 Honeyview。",
-                  (long long)se);
-            }
-            r.error = msg;
-          }
-        }
-        return r;
-      }
-      r.inprocError = ipError;   // 保留，万一子进程也失败就用它
-    }
-
-    std::wstring cmd = L"\"" + ModuleDir() + L"7z.exe\" x \"" + archivePath + L"\" -o\"" + dir +
-                       L"\" -y -bd -bso0 -bsp0";
-    // 有密码就带上，没有就传空密码，避免子进程卡在交互提示上
-    cmd += password.empty() ? L" -p" : (L" -p\"" + password + L"\"");
-
-    for (const wchar_t *ext : kImageExts)
-    {
-      std::wstring pattern = innerDir.empty()
-          ? (std::wstring(L"*.") + ext)
-          : (std::wstring(L"\"") + innerDir + L"\\*." + ext + L"\"");
-      cmd += L" " + pattern;
-    }
-
-    const std::wstring sevenZip = EnsureHelperExe();
-    if (!FileExists(sevenZip))
-    {
-      r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
-      r.envError = true;
+      r.openedPath = target;
+      r.extracted = count;
+      r.ok = true;
+      if (launch)
+        LaunchAndReport(r, target, dir);
       return r;
     }
-    std::wstring cmd2 = cmd;
-    // 把命令里的 exe 路径换成实际使用的那个
-    {
-      const std::wstring oldExe = L"\"" + ModuleDir() + L"7z.exe\"";
-      const size_t p = cmd2.find(oldExe);
-      if (p != std::wstring::npos)
-        cmd2.replace(p, oldExe.size(), L"\"" + sevenZip + L"\"");
-    }
 
-    r.command = cmd2;
+    r.inprocError = ipError;
+    r.needsPassword = pwdRequested;
+    // 失败时清掉写了一半的文件，否则下次会把残缺文件当缓存
+    DeleteTree(outSubDir);
 
-    DWORD code = 0;
-    std::wstring sevenZipOutput;
-    if (!RunAndWait(cmd2, code, sevenZipOutput))
+    if (pwdRequested)
     {
-      wchar_t msg[256];
-      swprintf_s(msg, L"启动 7z.exe 失败（错误码 %lu）", (unsigned long)::GetLastError());
-      r.error = msg;
-      r.envError = true;
+      // 归档加密：7z.exe 兜底用的也是同一个（空/错误）密码，必然失败。
+      // 交给上层弹密码框，拿到密码后重试。
+      r.error = L"归档已加密，需要密码";
+      if (r.inprocError.empty())
+        r.inprocError = r.error;
       return r;
     }
-    if (code != 0 || !FileExists(target))
+  }
+
+  // 兜底：启动 7z.exe（多用于进程内方式不支持的特殊归档）
+  std::wstring cmd = L"\"" + ModuleDir() + L"7z.exe\" x \"" + archivePath + L"\" -o\"" + dir +
+                     L"\" -y -bd -bso0 -bsp0";
+  // 有密码就带上，没有就传空密码，避免子进程卡在交互提示上
+  cmd += password.empty() ? L" -p" : (L" -p\"" + password + L"\"");
+
+  for (const wchar_t *ext : kImageExts)
+  {
+    std::wstring pattern = innerDir.empty()
+        ? (std::wstring(L"*.") + ext)
+        : (std::wstring(L"\"") + innerDir + L"\\*." + ext + L"\"");
+    cmd += L" " + pattern;
+  }
+
+  const std::wstring sevenZip = EnsureHelperExe();
+  if (!FileExists(sevenZip))
+  {
+    r.error = L"找不到 7z.exe（它必须和 7zFM.exe 放在同一目录）";
+    r.envError = true;
+    return r;
+  }
+  std::wstring cmd2 = cmd;
+  // 把命令里的 exe 路径换成实际使用的那个
+  {
+    const std::wstring oldExe = L"\"" + ModuleDir() + L"7z.exe\"";
+    const size_t p = cmd2.find(oldExe);
+    if (p != std::wstring::npos)
+      cmd2.replace(p, oldExe.size(), L"\"" + sevenZip + L"\"");
+  }
+
+  r.command = MaskPassword(cmd2, password);
+
+  DWORD code = 0;
+  std::wstring sevenZipOutput;
+  if (!RunAndWait(cmd2, code, sevenZipOutput))
+  {
+    wchar_t msg[256];
+    swprintf_s(msg, L"启动 7z.exe 失败（错误码 %lu）", (unsigned long)::GetLastError());
+    r.error = msg;
+    r.envError = true;
+    return r;
+  }
+  if (code != 0 || !IsUsableFile(target))
+  {
+    DeleteTree(outSubDir);
+    wchar_t msg[512];
+    if (code == 0)
+      swprintf_s(msg, L"目标文件没有解出来");
+    else
+      swprintf_s(msg, L"7z.exe 返回 %lu", (unsigned long)code);
+    r.error = msg;
+    if (!sevenZipOutput.empty())
     {
-      wchar_t msg[512];
-      if (code == 0)
-        swprintf_s(msg, L"目标文件没有解出来");
-      else
-        swprintf_s(msg, L"7z.exe 返回 %lu", (unsigned long)code);
-      r.error = msg;
-      if (!sevenZipOutput.empty())
-      {
-        // 只保留最后几行，够看就行
-        std::wstring tail = sevenZipOutput;
-        if (tail.size() > 400)
-          tail = tail.substr(tail.size() - 400);
-        r.error += L"\n\n7-Zip 的输出：\n";
-        r.error += tail;
-      }
-      return r;
+      // 只保留最后几行，够看就行
+      std::wstring tail = sevenZipOutput;
+      if (tail.size() > 400)
+        tail = tail.substr(tail.size() - 400);
+      r.error += L"\n\n7-Zip 的输出：\n";
+      r.error += tail;
     }
+    return r;
   }
 
   r.openedPath = target;
-  r.extracted = CountFiles(Join(dir, innerDir));
+  r.extracted = CountFiles(outSubDir);
   r.ok = true;
-
   if (launch)
-  {
-    const INT_PTR se = LaunchViewer(target, dir);
-    if (se <= 32)
-    {
-      r.ok = false;
-            wchar_t msg[768];
-            if (se == 5)
-            {
-              swprintf_s(msg,
-                  L"无法启动看图软件（错误 5：拒绝访问）。\n\n"
-                  L"这不是关联问题，而是当前进程被禁止启动外部程序。\n"
-                  L"这台机器上图片扩展名可能没有关联程序。\n"
-                  L"请在 %%LOCALAPPDATA%%\\7zip-custom\\config.ini 里写：\n"
-                  L"  [viewer]\n  path=C:////Program Files\\Honeyview\\Honeyview.exe");
-            }
-            else
-            {
-              swprintf_s(msg,
-                  L"无法启动看图软件（ShellExecute 返回 %lld）。\n"
-                  L"31 = 没有关联程序；建议把 .bmp/.png 关联到 Honeyview。",
-                  (long long)se);
-            }
-            r.error = msg;
-      return r;
-    }
-  }
-
+    LaunchAndReport(r, target, dir);
   return r;
 }
 

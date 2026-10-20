@@ -111,27 +111,23 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 做法：`CPanel::OpenItemInArchive` 在创建临时目录前调用
 `CustomHook_TryOpenImage(archivePath, relPath, password)`：
 
-1. 判断扩展名是不是图片（jpg/png/gif/webp/tiff/avif/heic/psd…），不是就返回 0
-2. 临时目录按 `归档路径 + 归档内目录` 做哈希：`%TEMP%\7zip-custom\preview\<hash>`
-   - 同一个目录第二次打开直接命中缓存，0 ms
-3. 用**同目录的 7z.exe** 把该目录下所有图片批量解出来
-   （`x archive -o<dir> -y -bd -bso0 -bsp0 -p<pwd> "photos\*.jpg" "photos\*.png" …`）
-4. `ShellExecute` 打开被点的那张，工作目录设成该临时目录
+1. 判断扩展名是不是图片（jpg/png/gif/webp/tiff/avif/heic/psd…），不是就返回 0；
+   归档内路径里带 `..`、盘符、冒号的一律拒绝（防止恶意归档写到临时目录之外）
+2. 临时目录按**归档路径**做哈希：`%TEMP%\7zip-custom\preview\<hash>\<归档内目录>`
+   - 同一归档的所有目录共用一个根；归档关闭时整个根删除
+   - 同一个目录第二次打开直接命中缓存（0 ms）；0 字节或比归档还旧的残留文件不算缓存
+3. 优先**进程内用 7z.dll** 批量解出该目录下所有图片（不启动子进程、密码不上命令行）；
+   进程内不支持的特殊格式才退回同目录的 `7z.exe`
+4. `ShellExecute` / 关联命令 / 系统照片查看器 依次尝试打开被点的那张，
+   工作目录设成该临时目录
 5. 看图软件按"同目录兄弟文件"翻页 → 整包图片都能滚
-
-失败要能退化：密码不对、7z.exe 缺失、没有关联看图程序 —— 一律返回 0，
-让 7-Zip 走它原来的"解压单个文件再打开"流程，用户至少还能看图。
-
-为什么用 7z.exe 而不是 7z.dll：复用的是同一个引擎（加密/分卷/嵌套全一致），
-不用在我们这边重写 `IInArchive` + `IArchiveExtractCallback` 一整套 COM 回调；
-代价只是几十毫秒的进程启动开销。
 
 失败分两类（这是调试时最容易被误导的地方）：
 
 | 类型 | 例子 | 处理 |
 |---|---|---|
-| 业务失败 | 密码不对 | 返回 0，7-Zip 走它原来的流程，会弹自己的密码框 |
-| 环境失败 | 缺 7z.exe / 建不了临时目录 / 起不了子进程 | **自己弹框说清楚**并返回 1 |
+| 业务失败 | 密码不对/需要密码 | 自己弹密码框重试；用户取消则返回 1，不再走 7-Zip |
+| 环境失败 | 建不了临时目录 / 起不了子进程 | **自己弹框说清楚**并返回 1 |
 
 为什么环境失败不能退回 7-Zip：它的 `CTempDir::Create("7zO")` 会再失败一次，
 弹出来的只是"拒绝访问。"——用户完全不知道发生了什么。我们宁可自己解释。
@@ -144,9 +140,9 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 所以 `CustomHook_TryOpenImage` 在 password 为空时会**自己再查一次库**。
 
 已知取舍：
-- 密码会出现在 7z.exe 的命令行里（本机进程表可见）。功能优先，后续可改成
-  走 stdin（`-si`）或自己实现 dll 提取。
-- 预览目录优先 `%TEMP%`，建不了再退 `%LOCALAPPDATA%`；72 小时自动清理。
+- 兜底到 7z.exe 时密码仍会进命令行（仅当进程内方式打不开该格式）。
+- 预览目录优先 `%TEMP%`，建不了再退 `%LOCALAPPDATA%`；关闭归档时删除本归档的预览根，
+  另外按 72 小时清理历史残留。
 
 ## 八、跨模块 ABI 约定（改 Bridge 前必读）
 
@@ -218,8 +214,52 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
    makefile 文本执行时还没定义。别绕了，直接在构建脚本里删产物。
 7. **`::ListView_xxx` 不行**。commctrl 的 `ListView_*` 是宏，前面加 `::` 会变成
    `::(BOOL)SNDMSG(...)`，报 `C2589: "(": "::" 右边的非法标记`。
+8. **从 `_out` 直接跑 exe 可能是 Low 完整性**。本机
+   `D:\MicrosoftVisualStudioProjects` 整棵树被沙箱/安全工具标了
+   `Mandatory Label\Low`，里面的 exe 启动后会以 Low IL 运行：写
+   `%TEMP%`/`%LOCALAPPDATA%` 返回 err 5、`ShellExecute` 返回 5、创建出来的子进程
+   也显示不出窗口。诊断信息里的“完整性”一栏能直接看到。
+   对策：`run.bat` 先把运行时复制到 `%LOCALAPPDATA%\7zip-custom\app`（无标签）再
+   启动；本地跑测试也先把 exe 拷到 `%TEMP%`（或从 APPDIR 跑）。
+9. **预览临时目录的生命周期**：目录按归档分根
+   （`preview\<归档哈希>\<内部目录>`）。上游 `CPanel::CloseOneLevel` 会调
+   `CustomHook_OnArchiveClosed` 把该归档的整个预览根删掉；`CPanel::OpenRootFolder`
+   在直接 `Clear()` 父链前也会逐个清理。72 小时定期清理只作兜底
+   （看图程序占用文件时可能删不掉）。
+10. **只加密数据、不加密文件名的归档**：打开时 7-Zip 不会问密码，预览时才需要。
+   `ExtractImagesInProcess` 现在用 `bool &passwordRequested` 报告；预览 hook 会弹一次
+   密码框并重试，密码只在进程内缓存（最多 8 个归档），勾选“保存到密码库”才落盘。
+   错误框里的 7z.exe 命令用 `-p"***"` 屏蔽，日志也不再打印明文密码。
+11. **改了 FM 源文件后 7zFM 报 C4599**（`/I` 与预编译头不匹配，`/WX` 下变错误）：
+   删掉 `CPP/7zip/Bundles/Fm/x64` 重建即可；旧 PCH 不要留。
+12. **关闭 7zFM 后便携包目录删不掉**：直接双击包内 `7zFM.exe` 时 CWD = 包目录，
+   调起的 UWP Photos 会继承这个 CWD；UWP/AppContainer 的目录句柄在非提权
+   Resource Monitor 里常看不到。`LaunchViewer` 用 `ScopedCurrentDir` 在启动看图
+   程序期间把 CWD 切到预览临时目录，`TryWindowsPhotoViewer` 也显式传 image 目录。
 
-## 十二、后续可做
+## 十二、便携包与发布（2026-10-20）
+
+- 打包：`pwsh Custom/tools/make-portable.ps1 -OutDir dist -Version v1.0.0`。
+  从 `_out\x64` 复制运行时，加上 `Custom/portable/` 的随包文件，生成
+  `dist\7zip-custom-portable-<version>.zip` 和对应的 `.sha256.txt`。
+- 发布：推送 `v*` tag 会触发 `.github/workflows/release.yml`，在
+  windows-latest 上全量构建并创建 GitHub Release。
+- **发布包不做数字签名**（长期策略）。Windows 可能提示“未知发布者”或
+  SmartScreen：先解除 zip 锁定，被拦时选“更多信息 → 仍要运行”。
+- 构建产物在 `_out` 里带 Low 完整性标签，**不要直接运行**（写不了 TEMP）；
+  本地自测先复制到无标签目录（如 `%LOCALAPPDATA%\7zip-custom\app`）。
+  打包脚本只复制文件，不受影响。
+- **正式便携包没有 `run.bat`**：解压后直接双击 `7zFM.exe`。`VaultDir()` /
+  `DebugLog()` / `ReadConfigValue()` 会自动识别 exe 同目录的 `data\` 和
+  `config.ini`：有 `data\` 就把密码库/日志放进去，有 `config.ini` 就先读它。
+- `run.bat` 只保留给开发版 `_out`（复制到 `%LOCALAPPDATA%\7zip-custom\app`，
+  绕开工作区 Low 完整性标签），**不进正式包**。
+- **密码库不能跨电脑**：主密钥用 DPAPI（CurrentUser）保护，换机前删
+  `data\vault.key`/`vault.dat`。日志可以随包走。
+- 2026-10-20 早期测试包用过自签名证书（`CN=7zip-custom`）；该证书不再用于发布，
+  PFX 留在 `%LOCALAPPDATA%\7zip-custom\signing\`，**不要提交**。
+
+## 十三、后续可做
 
 - 控制台接入：`CPP/7zip/UI/Console/OpenCallbackConsole.cpp` 的
   `Open_CryptoGetTextPassword`，加上 `Console/makefile` 的 LIBS 一行。

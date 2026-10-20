@@ -2,6 +2,9 @@
 
 #include "StdAfx.h"
 
+// 7zip-custom: drop preview temp files when an archive level is closed
+#include "../../../../Custom/Bridge/CustomHooks.h"
+
 #include "../../../Common/StringConvert.h"
 #include "../../../Common/Wildcard.h"
 
@@ -998,6 +1001,10 @@ void CPanel::OpenParentFolder()
 
 void CPanel::CloseOneLevel()
 {
+  // 7zip-custom: remember which archive this level belongs to, so its preview
+  // temp files can be removed after the folder is released.
+  const UString closedArcPath = fs2us(_parentFolders.Back().FilePath);
+
   ReleaseFolder();
   _library.Free();
   {
@@ -1011,6 +1018,9 @@ void CPanel::CloseOneLevel()
   _parentFolders.DeleteBack();
   if (_parentFolders.IsEmpty())
     _flatMode = _flatModeForDisk;
+
+  if (!closedArcPath.IsEmpty())
+    CustomHook_OnArchiveClosed(closedArcPath);
 }
 
 void CPanel::CloseOpenFolders()
@@ -1026,6 +1036,9 @@ void CPanel::OpenRootFolder()
 {
   CDisableTimerProcessing disableTimerProcessing(*this);
   CDisableNotify disableNotify(*this);
+  // 7zip-custom: this path drops the folder chain without CloseOneLevel
+  for (unsigned i = 0; i < _parentFolders.Size(); ++i)
+    CustomHook_OnArchiveClosed(fs2us(_parentFolders[i].FilePath));
   _parentFolders.Clear();
   SetToRootFolder();
   RefreshListCtrl();

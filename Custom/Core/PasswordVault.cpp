@@ -142,6 +142,24 @@ std::wstring VaultDir()
   if (n > 0 && n < sizeof(overrideDir) / sizeof(overrideDir[0]))
     return overrideDir;
 
+  // 便携模式：exe 旁边有 data\ 目录就直接用它，数据跟着文件夹走。
+  // （正式便携包里 data\ 是随包带的；安装版/开发版的 _out 没有这个目录。）
+  wchar_t exePath[MAX_PATH * 2] = {};
+  const DWORD exeLen = ::GetModuleFileNameW(nullptr, exePath,
+                                            (DWORD)(sizeof(exePath) / sizeof(exePath[0])));
+  if (exeLen > 0 && exeLen < sizeof(exePath) / sizeof(exePath[0]))
+  {
+    std::wstring exe(exePath, exeLen);
+    const size_t slash = exe.find_last_of(L"\\/");
+    if (slash != std::wstring::npos)
+    {
+      const std::wstring dataDir = exe.substr(0, slash + 1) + L"data";
+      const DWORD attr = ::GetFileAttributesW(dataDir.c_str());
+      if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+        return dataDir;
+    }
+  }
+
   PWSTR base = nullptr;
   if (FAILED(::SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &base)))
     return std::wstring();
@@ -233,14 +251,32 @@ bool PasswordVault::ReadFileBytes(const std::wstring &path, std::vector<uint8_t>
 
 bool PasswordVault::WriteFileBytes(const std::wstring &path, const void *data, size_t size) const
 {
-  FileGuard f;
-  f.h = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
-                      CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (f.h == INVALID_HANDLE_VALUE)
+  // 先写临时文件再原子替换：写到一半崩溃也不会把整个库毁掉
+  wchar_t suffix[64];
+  swprintf_s(suffix, L".%lu.%lu.tmp", (unsigned long)::GetCurrentProcessId(),
+             (unsigned long)::GetCurrentThreadId());
+  const std::wstring tmp = path + suffix;
+
+  HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE)
     return false;
   DWORD wrote = 0;
-  const bool ok = ::WriteFile(f.h, data, (DWORD)size, &wrote, nullptr) && wrote == size;
-  return ok;
+  const bool writeOk = ::WriteFile(h, data, (DWORD)size, &wrote, nullptr) && wrote == size;
+  ::CloseHandle(h);
+  if (!writeOk)
+  {
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+
+  if (!::MoveFileExW(tmp.c_str(), path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+  {
+    ::DeleteFileW(tmp.c_str());
+    return false;
+  }
+  return true;
 }
 
 bool PasswordVault::LoadKey(std::vector<uint8_t> &key, bool createIfMissing)
@@ -478,6 +514,11 @@ bool PasswordVault::FindForArchive(const std::wstring &archivePath, std::wstring
   const VaultEntry *bestPath = nullptr;
   const VaultEntry *bestWild = nullptr;
 
+  // 完整路径匹配用，循环外算一次
+  std::wstring targetPath = archivePath;
+  for (auto &c : targetPath)
+    c = LowerCh(c);
+
   for (const auto &e : _entries)
   {
     if (e.password.empty())
@@ -506,10 +547,7 @@ bool PasswordVault::FindForArchive(const std::wstring &archivePath, std::wstring
       std::wstring full = e.name;
       for (auto &c : full)
         c = LowerCh(c);
-      std::wstring target = archivePath;
-      for (auto &c : target)
-        c = LowerCh(c);
-      if (full == target)
+      if (full == targetPath)
         bestPath = &e;
     }
   }

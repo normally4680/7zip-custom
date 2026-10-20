@@ -20,7 +20,10 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
                             const std::wstring &outDir,
                             const std::vector<std::wstring> &exts,
                             int &extractedCount,
-                            std::wstring &error);
+                            std::wstring &error,
+                            // true = 7-Zip 在解压过程中向我们要过密码（说明归档加密）。
+                            // 密码为空/错误时用它在上一层弹密码框。
+                            bool &passwordRequested);
 
 } // namespace custom
 

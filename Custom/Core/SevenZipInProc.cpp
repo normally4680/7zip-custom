@@ -9,12 +9,14 @@
 // 7zFM 打开归档时 7z.dll 已经映射进本进程了，直接复用即可。
 
 #include "SevenZipInProc.h"
+#include "ImagePreview.h"   // IsSafeInnerPath：复用同一套条目路径校验
 
 #include <windows.h>
 #include <shlobj.h>
 
 #include <string>
 #include <vector>
+#include <cwctype>
 
 #include "../../CPP/7zip/Archive/IArchive.h"
 #include "../../CPP/7zip/IPassword.h"
@@ -196,6 +198,7 @@ public:
 
 public:
   std::wstring Password;
+  bool *PasswordRequested = nullptr;
 };
 
 Z7_COM7F_IMF(COpenCallback::SetTotal(const UInt64 *, const UInt64 *)) { return S_OK; }
@@ -203,6 +206,8 @@ Z7_COM7F_IMF(COpenCallback::SetCompleted(const UInt64 *, const UInt64 *)) { retu
 
 Z7_COM7F_IMF(COpenCallback::CryptoGetTextPassword(BSTR *password))
 {
+  if (PasswordRequested)
+    *PasswordRequested = true;
   if (!password)
     return E_INVALIDARG;
   *password = ::SysAllocString(Password.c_str());
@@ -293,30 +298,12 @@ public:
 
 public:
   std::wstring Password;
+  bool *PasswordRequested = nullptr;
   std::wstring OutDir;
   std::vector<std::wstring> Paths;   // index -> 归档内路径
   int Written = 0;
   DWORD LastWin32 = 0;
   std::wstring LastPath;
-  int StreamCalls = 0;
-
-private:
-  bool MakeDirs(const std::wstring &full)
-  {
-    const size_t pos = full.find_last_of(L'\\');
-    if (pos == std::wstring::npos)
-      return true;
-    const std::wstring dir = full.substr(0, pos);
-    // 逐级创建
-    std::wstring cur;
-    for (size_t i = 0; i < dir.size(); ++i)
-    {
-      cur += dir[i];
-      if (dir[i] == L'\\' || i + 1 == dir.size())
-        ::CreateDirectoryW(cur.c_str(), nullptr);
-    }
-    return true;
-  }
 };
 
 Z7_COM7F_IMF(CExtractCallback::SetTotal(UInt64)) { return S_OK; }
@@ -330,11 +317,12 @@ Z7_COM7F_IMF(CExtractCallback::GetStream(UInt32 index, ISequentialOutStream **ou
   if (askExtractMode != NArchive::NExtract::NAskMode::kExtract)
     return S_OK;
 
-  ++StreamCalls;
   if (index >= Paths.size())
     return S_OK;
 
   std::wstring rel = Paths[index];
+  if (rel.empty())
+    return S_OK;
   for (auto &c : rel)
     if (c == L'/')
       c = L'\\';
@@ -366,6 +354,8 @@ Z7_COM7F_IMF(CExtractCallback::SetOperationResult(Int32)) { return S_OK; }
 
 Z7_COM7F_IMF(CExtractCallback::CryptoGetTextPassword(BSTR *password))
 {
+  if (PasswordRequested)
+    *PasswordRequested = true;
   if (!password)
     return E_INVALIDARG;
   *password = ::SysAllocString(Password.c_str());
@@ -382,6 +372,7 @@ Z7_COM7F_IMF(CExtractCallback::CryptoGetTextPassword2(Int32 *passwordIsDefined, 
 // 尝试用某个 handler 打开
 HRESULT TryOpenWithFormat(const SevenZipApi &api, UInt32 formatIndex,
                           const std::wstring &archivePath, const std::wstring &password,
+                          bool *passwordRequested,
                           CMyComPtr<IInArchive> &outArchive, CMyComPtr<IInStream> &outStream)
 {
   // kClassID 是一个长度为 16 的 BSTR（不是 PROPVARIANT 直接转 GUID）
@@ -420,6 +411,7 @@ HRESULT TryOpenWithFormat(const SevenZipApi &api, UInt32 formatIndex,
   CMyComPtr<IArchiveOpenCallback> cb = (IArchiveOpenCallback *)(new COpenCallback);
   COpenCallback *cbSpec = (COpenCallback *)(IArchiveOpenCallback *)cb;
   cbSpec->Password = password;
+  cbSpec->PasswordRequested = passwordRequested;
 
   const UInt64 scanSize = 1 << 23;
   const HRESULT openRes = archive->Open(stream, &scanSize, cb);
@@ -442,7 +434,7 @@ std::wstring LowerExt(const std::wstring &path)
     return std::wstring();
   std::wstring ext = path.substr(dot + 1);
   for (auto &c : ext)
-    c = (wchar_t)::CharLowerW((LPWSTR)(UINT_PTR)c);
+    c = (wchar_t)::towlower(c);
   return ext;
 }
 
@@ -455,9 +447,11 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
                             const std::wstring &outDir,
                             const std::vector<std::wstring> &exts,
                             int &extractedCount,
-                            std::wstring &error)
+                            std::wstring &error,
+                            bool &passwordRequested)
 {
   extractedCount = 0;
+  passwordRequested = false;
   const SevenZipApi api = LoadApi(dllPath);
   if (!api.ok)
   {
@@ -474,7 +468,8 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
 
   // 先按扩展名找匹配的 handler，再不行就全试
   const std::wstring ext = LowerExt(archivePath);
-  std::vector<UInt32> order;
+  struct FormatCandidate { UInt32 index; bool nameMatch; };
+  std::vector<FormatCandidate> order;
   for (UInt32 i = 0; i < numFormats; ++i)
   {
     PROPVARIANT v;
@@ -483,23 +478,33 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
     {
       std::wstring name = v.bstrVal;
       for (auto &c : name)
-        c = (wchar_t)::CharLowerW((LPWSTR)(UINT_PTR)c);
-      if (!ext.empty() && name.find(ext) != std::wstring::npos)
-        order.insert(order.begin(), i);
+        c = (wchar_t)::towlower(c);
+      const bool nameMatch = !ext.empty() && name.find(ext) != std::wstring::npos;
+      if (nameMatch)
+        order.insert(order.begin(), { i, true });
       else
-        order.push_back(i);
+        order.push_back({ i, false });
     }
     PropVariantClear(&v);
   }
 
   CMyComPtr<IInArchive> archive;
   CMyComPtr<IInStream> stream;
-  for (UInt32 idx : order)
+  for (const FormatCandidate &c : order)
   {
-    if (TryOpenWithFormat(api, idx, archivePath, password, archive, stream) == S_OK)
+    bool asked = false;
+    if (TryOpenWithFormat(api, c.index, archivePath, password, &asked, archive, stream) == S_OK)
+    {
+      passwordRequested = passwordRequested || asked;
       break;
+    }
+    passwordRequested = passwordRequested || asked;
     archive.Release();
     stream.Release();
+    // 扩展名对上了、也向我们要过密码：说明格式没错，只是密码不对。
+    // 继续拿同一个密码去试其它 handler 没有意义，直接交给上层弹框。
+    if (c.nameMatch && asked)
+      break;
   }
 
   if (!archive)
@@ -548,6 +553,10 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
       if (c == L'/')
         c = L'\\';
 
+    // 恶意归档可能带 "..\..\x.png" 之类的条目，绝不能拼进输出路径
+    if (!IsSafeInnerPath(norm))
+      continue;
+
     const size_t pos = norm.find_last_of(L'\\');
     std::wstring parent = (pos == std::wstring::npos) ? L"" : norm.substr(0, pos);
     if (_wcsicmp(parent.c_str(), dirLower.c_str()) != 0)
@@ -559,7 +568,7 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
       continue;
     std::wstring e = name.substr(dot + 1);
     for (auto &c : e)
-      c = (wchar_t)::CharLowerW((LPWSTR)(UINT_PTR)c);
+      c = (wchar_t)::towlower(c);
 
     bool wanted = false;
     for (const auto &x : exts)
@@ -595,10 +604,10 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
   ecsSpec->OutDir = base;
   ecsSpec->Paths = paths;
   ecsSpec->Password = password;
+  ecsSpec->PasswordRequested = &passwordRequested;
   const HRESULT res = archive->Extract(&indices[0], indices.Size(), false, cb);
   if (res != S_OK)
   {
-    wchar_t msg[128];
     error = L"解压失败 0x";
     wchar_t hb[16]; swprintf_s(hb, L"%08X", (unsigned)res);
     error += hb;
