@@ -70,7 +70,7 @@ $(O)\VaultCrypto.obj: Core\VaultCrypto.cpp Core\VaultCrypto.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\VaultCrypto.obj Core\VaultCrypto.cpp
 
-$(O)\SevenZipInProc.obj: Core\SevenZipInProc.cpp Core\SevenZipInProc.h
+$(O)\SevenZipInProc.obj: Core\SevenZipInProc.cpp Core\SevenZipInProc.h Core\ImagePreview.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\SevenZipInProc.obj Core\SevenZipInProc.cpp
 
