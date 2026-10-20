@@ -270,9 +270,9 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 ## 十四、分支与上游升级
 
 - `main`：集成分支，密码库 + 无缝看图 + 打包/发布配置都在这里；Release tag 从 main 打。
-- `feature/password-vault`：密码库阶段的历史快照（基于上游 26.04）。
-- `feature/image-preview`：看图与后续修复阶段的历史快照，**叠加在密码库之上**。
-  看图本身依赖密码库（加密包预览要查库/弹密码框），所以它不是与密码库平行的独立分支。
+- `feature/custom-features`：附加功能分支，包含密码库 + 无缝看图，当前与 main 同步。
+  以后有新的附加功能在这里开发，稳定后合回 main。原来的
+  `feature/password-vault` 和 `feature/image-preview` 已合并删除，提交历史仍保留在 main 中。
 - 上游升级（以 26.05 为例）：
 
   ```bash
