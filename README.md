@@ -14,13 +14,6 @@
 3. 双击 `7zFM.exe` 即可，**不需要任何启动脚本**。
 4. 密码库和日志会自动保存在 exe 同目录的 `data\`；换电脑时整个文件夹一起拷走即可。
 
-压缩包里自带演示文件：
-
-| 文件 | 说明 |
-|---|---|
-| `demo\photos.7z` | 普通图片压缩包 |
-| `demo\photos-enc.7z` | 加密图片压缩包，密码 `7zip-demo` |
-
 ## 功能说明
 
 ### 密码库
@@ -65,9 +58,7 @@ build-msvc.bat
 pwsh Custom/tools/make-portable.ps1 -OutDir dist -Version v1.0.0
 ```
 
-### 自动发布
-
-推送形如 `v1.0.0` 的 tag 会触发 [`.github/workflows/release.yml`](.github/workflows/release.yml)：在 Windows runner 上全量构建、生成便携包并创建 GitHub Release。发布包不做数字签名。
+推送形如 `v1.0.0` 的 tag 会触发 `.github/workflows/release.yml`：在 Windows runner 上全量构建、生成便携包并创建 GitHub Release。发布包不做数字签名。
 
 ## 已知限制
 
@@ -83,7 +74,7 @@ CPP/                7-Zip 上游源码（改动极少）
 Custom/Bridge/      对 7-Zip 暴露的 C ABI hook
 Custom/Core/        密码库、进程内解压、看图逻辑
 Custom/UI/          密码库管理器 / 密码输入框
-Custom/portable/    便携包随包文件（说明、配置、演示包）
+Custom/portable/    便携包随包文件（说明、配置）
 Custom/tools/       打包与诊断脚本
 ```
 

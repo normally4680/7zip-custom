@@ -44,10 +44,6 @@ Copy-Item (Join-Path $repo "Custom\tools\diagnose.bat") (Join-Path $stage "diagn
 New-Item -ItemType Directory -Path (Join-Path $stage "Lang") | Out-Null
 Copy-Item (Join-Path $repo "Custom\lang\zh-cn.txt") (Join-Path $stage "Lang\zh-cn.txt")
 
-New-Item -ItemType Directory -Path (Join-Path $stage "demo") | Out-Null
-Copy-Item (Join-Path $assets "demo\photos.7z") (Join-Path $stage "demo\photos.7z")
-Copy-Item (Join-Path $assets "demo\photos-enc.7z") (Join-Path $stage "demo\photos-enc.7z")
-
 # Empty data\ marks portable mode (vault + logs live here).
 New-Item -ItemType Directory -Path (Join-Path $stage "data") | Out-Null
 
