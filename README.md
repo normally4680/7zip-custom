@@ -58,8 +58,6 @@ build-msvc.bat
 pwsh Custom/tools/make-portable.ps1 -OutDir dist -Version v1.0.0
 ```
 
-推送形如 `v1.0.0` 的 tag 会触发 `.github/workflows/release.yml`：在 Windows runner 上全量构建、生成便携包并创建 GitHub Release。发布包不做数字签名。
-
 ## 已知限制
 
 - 仅支持 64 位 Windows 10/11。
