@@ -18,15 +18,20 @@ REM        UTF-8 comments inside batch files.
 REM ============================================================
 setlocal EnableDelayedExpansion
 
-set "VSDIR=D:\Microsoft Visual Studio\18\Community"
-set "VCVARS=%VSDIR%\VC\Auxiliary\Build\vcvars64.bat"
+REM Locate Visual Studio: use VSDIR if set, otherwise the newest VS install.
+REM Local dev machines may also have a fixed install path; CI uses vswhere.
+if not defined VSDIR if exist "D:\Microsoft Visual Studio\18\Community" set "VSDIR=D:\Microsoft Visual Studio\18\Community"
+if not defined VSDIR (
+    for /f "usebackq delims=" %%I in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set "VSDIR=%%I"
+)
+set "VCVARS=!VSDIR!\VC\Auxiliary\Build\vcvars64.bat"
 
-if not exist "%VCVARS%" (
-    echo [ERROR] vcvars64.bat not found: %VCVARS%
+if not exist "!VCVARS!" (
+    echo [ERROR] vcvars64.bat not found. Set VSDIR to your Visual Studio directory.
     exit /b 1
 )
 
-call "%VCVARS%" >nul
+call "!VCVARS!" >nul
 if errorlevel 1 ( echo [ERROR] vcvars64 init failed & exit /b 1 )
 
 REM ---- Windows SDK fallback ----
