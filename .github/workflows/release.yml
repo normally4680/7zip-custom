@@ -1,0 +1,42 @@
+name: Build portable release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build (7z.dll / 7z.exe / 7zG.exe / 7zFM.exe / 7zVault)
+        shell: cmd
+        run: build-msvc.bat
+
+      - name: Package portable zip
+        shell: pwsh
+        run: ./Custom/tools/make-portable.ps1 -OutDir dist -Version $env:GITHUB_REF_NAME
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: 7zip-custom-portable
+          path: dist/*.zip*
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.sha256.txt
+          generate_release_notes: true
+          draft: false

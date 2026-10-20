@@ -35,6 +35,9 @@ _demo/
 Custom/build/
 _vaulttest/
 
+# ---- 便携包输出 ----
+dist/
+
 # ---- 项目本地数据 ----
 .workbuddy/
 
