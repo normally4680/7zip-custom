@@ -265,4 +265,25 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
   `Open_CryptoGetTextPassword`，加上 `Console/makefile` 的 LIBS 一行。
 - 压缩时也记密码：`CPP/7zip/UI/GUI/UpdateCallbackGUI.cpp`。
 - 主密码模式：`vault.dat` 里 `flags` 置位，`vault.key` 改成 KDF 派生。
-- 看图：`CustomHook_TryOpenImage` 的实现在 `feature/image-preview` 分支。
+- 看图：实现在 `Custom/Core/ImagePreview.cpp`，入口是 `CustomHook_TryOpenImage`。
+
+## 十四、分支与上游升级
+
+- `main`：集成分支，密码库 + 无缝看图 + 打包/发布配置都在这里；Release tag 从 main 打。
+- `feature/password-vault`：密码库阶段的历史快照（基于上游 26.04）。
+- `feature/image-preview`：看图与后续修复阶段的历史快照，**叠加在密码库之上**。
+  看图本身依赖密码库（加密包预览要查库/弹密码框），所以它不是与密码库平行的独立分支。
+- 上游升级（以 26.05 为例）：
+
+  ```bash
+  git fetch upstream --tags
+  git switch -c upgrade/26.05 main
+  git rebase --onto 26.05 9128b80 upgrade/26.05
+  ```
+
+  `9128b80` 是当前基线（上游 26.04）。冲突只会出现在我们改过的少数
+  `CPP/` 注入点；`Custom/` 整目录通常原样保留。完成后跑
+  `build-msvc.bat` + `VaultTest` / `PreviewTest`，再合回 `main`。
+- 不建议为了“两条分支完全独立”重写历史：两个功能共享 hook 和密码流程，
+  拆开后的维护成本高于收益；控制升级成本的关键是保持 `Custom/` 自包含、
+  `CPP/` 注入点最小。
