@@ -96,7 +96,7 @@ int wmain(int argc, wchar_t **argv)
     return known ? 0 : 1;
   }
 
-  // 直接走 Honeyview 原生路径（不解压）
+  // 直接走 Honeyview 原生路径（不解压）；可选密码会后台自动填入密码框
   if (wcscmp(argv[1], L"--native") == 0 && argc >= 4)
   {
     const std::wstring hv = custom::FindHoneyview();
@@ -104,8 +104,11 @@ int wmain(int argc, wchar_t **argv)
     if (hv.empty())
       return 1;
     const std::wstring inner = custom::NormalizeInnerPath(argv[2], argv[3]);
-    const bool ok = custom::LaunchHoneyviewArchive(hv, argv[2], inner);
-    printf("launch=%d inner=%s\n", (int)ok, Utf8(inner).c_str());
+    const std::wstring pwd = (argc >= 5) ? argv[4] : L"";
+    const bool ok = custom::LaunchHoneyviewArchive(hv, argv[2], inner, pwd);
+    printf("launch=%d inner=%s autofill=%d\n", (int)ok, Utf8(inner).c_str(), (int)!pwd.empty());
+    if (ok && !pwd.empty())
+      ::Sleep(5000);   // 等后台线程把密码填进 Honeyview 的密码框
     return ok ? 0 : 1;
   }
 
@@ -165,6 +168,8 @@ int wmain(int argc, wchar_t **argv)
     if (viaHook)
       ::SetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", L"1");
     const int r = CustomHook_TryOpenImage(argv[2], argv[3], nullptr);  // 故意不传密码
+    if (viaHookLaunch)
+      ::Sleep(4000);   // 给 Hook 里的自动填密码线程留时间
     printf("hook returned %d (%s)\n", r, r == 1 ? "handled" : "fallback to 7-Zip");
     return r == 1 ? 0 : 1;
   }

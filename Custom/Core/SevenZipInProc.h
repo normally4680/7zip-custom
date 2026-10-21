@@ -27,7 +27,8 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
 
 // 快速判断归档是否需要密码（只看头部和条目属性，不解压）。
 //   encrypted : true = 归档加密（含只加密数据的包）
-// 返回 false = 判断不了（打不开/格式不支持），调用方应走解压流程。
+// 返回 false = 判断不了（打不开/格式不支持）；调用方仍可尝试 Honeyview 原生模式，
+// 只是不要自动填密码，让 Honeyview 自己弹框。
 bool ArchiveIsEncrypted(const wchar_t *dllPath, const std::wstring &archivePath,
                         bool &encrypted);
 

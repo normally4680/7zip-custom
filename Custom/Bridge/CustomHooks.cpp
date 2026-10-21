@@ -509,7 +509,8 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
                                                 (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
 
   // 首选：Honeyview 能直接解析压缩包（archive|inner），完全不需要解压，
-  // 大包也不会卡 UI。只对"确定未加密"的归档走这条；加密包仍走解压 + 密码框。
+  // 大包也不会卡 UI。加密包由 Honeyview 自己弹密码框；如果密码库/CFolderLink
+  // 已经有密码，后台会自动填入，用户不用再输一遍。
   if (launch)
   {
     const std::wstring hv = custom::FindHoneyview();
@@ -518,20 +519,23 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
       bool encrypted = false;
       const std::wstring dll = ModuleDir() + L"7z.dll";
       const bool known = custom::ArchiveIsEncrypted(dll.c_str(), archivePath, encrypted);
-      if (known && !encrypted)
+      const std::wstring inner = custom::NormalizeInnerPath(archivePath, itemRelPath);
+      if (!inner.empty() && custom::IsSafeInnerPath(inner))
       {
-        const std::wstring inner = custom::NormalizeInnerPath(archivePath, itemRelPath);
-        if (!inner.empty() && custom::IsSafeInnerPath(inner) &&
-            custom::LaunchHoneyviewArchive(hv, archivePath, inner))
+        // 确定未加密就不要启动自动填密码线程；其余情况有密码就带上
+        const std::wstring autofill = (!known || encrypted) ? pwd : std::wstring();
+        if (custom::LaunchHoneyviewArchive(hv, archivePath, inner, autofill))
         {
-          DebugLog(L"TryOpenImage.native", (L"honeyview: " + inner).c_str());
+          std::wstring detail = L"honeyview: " + inner;
+          if (!autofill.empty())
+            detail += L" (autofill)";
+          else if (known && encrypted)
+            detail += L" (prompt)";
+          DebugLog(L"TryOpenImage.native", detail.c_str());
           return 1;
         }
       }
-      DebugLog(L"TryOpenImage.native",
-               !known ? L"(cannot inspect, fallback)"
-                      : (encrypted ? L"(encrypted, fallback)"
-                                   : L"(launch failed, fallback)"));
+      DebugLog(L"TryOpenImage.native", L"(launch failed, fallback)");
     }
   }
 

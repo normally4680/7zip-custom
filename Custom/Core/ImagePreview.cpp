@@ -805,9 +805,95 @@ std::wstring FindHoneyview()
   return std::wstring();
 }
 
+namespace {
+
+struct AutofillCtx
+{
+  DWORD pid = 0;
+  std::wstring password;
+};
+
+struct FindDlgCtx
+{
+  DWORD pid = 0;
+  HWND dlg = nullptr;
+  HWND edit = nullptr;
+  HWND button = nullptr;
+};
+
+BOOL CALLBACK FindPasswordDlgProc(HWND h, LPARAM lp)
+{
+  FindDlgCtx *c = reinterpret_cast<FindDlgCtx *>(lp);
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(h, &pid);
+  if (pid != c->pid || !::IsWindowVisible(h))
+    return TRUE;
+
+  wchar_t cls[64] = {};
+  if (::GetClassNameW(h, cls, 64) == 0 || wcscmp(cls, L"#32770") != 0)
+    return TRUE;
+
+  struct ChildCtx { HWND edit; HWND button; } cc = { nullptr, nullptr };
+  ::EnumChildWindows(h, [](HWND ch, LPARAM p) -> BOOL {
+    ChildCtx *x = reinterpret_cast<ChildCtx *>(p);
+    wchar_t name[64] = {};
+    ::GetClassNameW(ch, name, 64);
+    if (!x->edit && _wcsicmp(name, L"Edit") == 0)
+      x->edit = ch;
+    if (!x->button && _wcsicmp(name, L"Button") == 0 && ::GetDlgCtrlID(ch) == IDOK)
+      x->button = ch;
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&cc));
+  if (!cc.edit || !cc.button)
+    return TRUE;
+
+  // Honeyview 5.53 的密码框 Edit ID 是 1151；其他版本用标题兜底
+  wchar_t title[256] = {};
+  ::GetWindowTextW(h, title, 256);
+  std::wstring lower = title;
+  for (auto &ch : lower)
+    ch = (wchar_t)::towlower(ch);
+  const bool looksPassword = ::GetDlgCtrlID(cc.edit) == 1151 ||
+      lower.find(L"password") != std::wstring::npos ||
+      wcsstr(title, L"密码") != nullptr;
+  if (!looksPassword)
+    return TRUE;
+
+  c->dlg = h;
+  c->edit = cc.edit;
+  c->button = cc.button;
+  return FALSE;
+}
+
+// 后台等 Honeyview 的密码框出现，自动填入密码并点确定；最多等 10 秒。
+DWORD WINAPI AutofillThread(LPVOID param)
+{
+  AutofillCtx *c = reinterpret_cast<AutofillCtx *>(param);
+  for (int i = 0; i < 200; ++i)
+  {
+    FindDlgCtx fc;
+    fc.pid = c->pid;
+    ::EnumWindows(FindPasswordDlgProc, reinterpret_cast<LPARAM>(&fc));
+    if (fc.dlg && fc.edit && fc.button)
+    {
+      ::SendMessageW(fc.edit, WM_SETTEXT, 0, (LPARAM)c->password.c_str());
+      ::SendMessageW(fc.button, BM_CLICK, 0, 0);
+      break;
+    }
+    ::Sleep(50);
+  }
+  if (!c->password.empty())
+    ::SecureZeroMemory(&c->password[0], c->password.size() * sizeof(wchar_t));
+  delete c;
+  return 0;
+}
+
+} // namespace
+
 bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
                             const std::wstring &archivePath,
-                            const std::wstring &innerRelPath)
+                            const std::wstring &innerRelPath,
+                            const std::wstring &password)
 {
   if (honeyviewExe.empty() || archivePath.empty() || innerRelPath.empty())
     return false;
@@ -831,8 +917,25 @@ bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
   if (!::CreateProcessW(honeyviewExe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0,
                         nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
     return false;
+
+  const DWORD pid = pi.dwProcessId;
   ::CloseHandle(pi.hThread);
   ::CloseHandle(pi.hProcess);
+
+  if (!password.empty())
+  {
+    AutofillCtx *ctx = new AutofillCtx;
+    ctx->pid = pid;
+    ctx->password = password;
+    HANDLE th = ::CreateThread(nullptr, 0, AutofillThread, ctx, 0, nullptr);
+    if (th)
+      ::CloseHandle(th);
+    else
+    {
+      ::SecureZeroMemory(&ctx->password[0], ctx->password.size() * sizeof(wchar_t));
+      delete ctx;
+    }
+  }
   return true;
 }
 

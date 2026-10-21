@@ -49,9 +49,11 @@ std::wstring NormalizeInnerPath(const std::wstring &archivePath,
 std::wstring FindHoneyview();
 
 // 用 Honeyview 直接打开归档内某张图，路径格式为 "archive|inner"。
+// password 非空时，后台等 Honeyview 的密码框出现并自动填入（加密包用）。
 bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
                             const std::wstring &archivePath,
-                            const std::wstring &innerRelPath);
+                            const std::wstring &innerRelPath,
+                            const std::wstring &password = std::wstring());
 
 // innerRelPath : 归档内相对路径，用 '/' 或 '\' 分隔都行
 // password     : 可以为空；空的时候用空密码试，失败就返回 false 让 7-Zip 走原流程
