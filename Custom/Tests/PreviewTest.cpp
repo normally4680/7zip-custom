@@ -87,6 +87,28 @@ int wmain(int argc, wchar_t **argv)
     return fails ? 1 : 0;
   }
 
+  // 只看归档是否加密（决定走 Honeyview 原生还是解压）
+  if (wcscmp(argv[1], L"--enc-check") == 0 && argc >= 3)
+  {
+    bool enc = false;
+    const bool known = custom::ArchiveIsEncrypted(L"7z.dll", argv[2], enc);
+    printf("known=%d encrypted=%d\n", (int)known, (int)enc);
+    return known ? 0 : 1;
+  }
+
+  // 直接走 Honeyview 原生路径（不解压）
+  if (wcscmp(argv[1], L"--native") == 0 && argc >= 4)
+  {
+    const std::wstring hv = custom::FindHoneyview();
+    printf("honeyview: %s\n", Utf8(hv).c_str());
+    if (hv.empty())
+      return 1;
+    const std::wstring inner = custom::NormalizeInnerPath(argv[2], argv[3]);
+    const bool ok = custom::LaunchHoneyviewArchive(hv, argv[2], inner);
+    printf("launch=%d inner=%s\n", (int)ok, Utf8(inner).c_str());
+    return ok ? 0 : 1;
+  }
+
   if (argc < 3)
   {
     printf("usage: PreviewTest.exe <archive> <inner-path> [password]\n");
