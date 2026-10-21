@@ -705,6 +705,13 @@ void ShowDiagnostics(HWND hwnd)
   msg += L"\n7z.exe  : ";
   msg += (a != INVALID_FILE_ATTRIBUTES) ? L"存在" : L"缺失";
 
+  msg += L"\n看图引擎: ";
+  {
+    const std::wstring hv = custom::FindHoneyview();
+    msg += hv.empty() ? L"解压到临时目录（未找到 Honeyview）"
+                      : (L"Honeyview 原生：" + hv);
+  }
+
   wchar_t tmp[MAX_PATH] = {};
   ::GetTempPathW(MAX_PATH, tmp);
   msg += L"\n临时目录: ";
