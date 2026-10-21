@@ -119,8 +119,9 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
    - 用 7z.dll 的 `ArchiveIsEncrypted` 快速判断归档是否加密（只看头部和条目属性）
    - 未加密 → `Honeyview.exe "<归档>|<归档内路径>"`。Honeyview 自己解析压缩包、
      按需解码；7zFM 的 UI 线程只等进程创建（约百毫秒），大包不会假死
-   - 加密包 → 回退解压 + 密码框（Honeyview 命令行没有密码参数）
-3. 没有 Honeyview / 加密包 / 判断不了格式 → 回退解压流程：
+   - 加密包 → **仍然走原生模式**：密码库/`CFolderLink` 已有密码时，后台等 Honeyview
+     的密码框出现并自动填入（见下）；没有密码就让 Honeyview 自己弹框
+3. 没有 Honeyview / 原生启动失败 → 回退解压流程：
    - 临时目录按**归档路径**做哈希：`%TEMP%\7zip-custom\preview\<hash>\<归档内目录>`
      - 同一归档的所有目录共用一个根；归档关闭时整个根删除
      - 同一个目录第二次打开直接命中缓存（0 ms）；0 字节或比归档还旧的残留文件不算缓存
@@ -151,9 +152,9 @@ Honeyview 时的实际命令行抓到的（WMI 查 `Win32_Process.CommandLine`�
 所以 `CustomHook_TryOpenImage` 在 password 为空时会**自己再查一次库**。
 
 已知取舍：
-- Honeyview 原生模式只用于"确定未加密"的归档；Honeyview 命令行没有密码参数，
-  加密包仍走解压 + 密码框。
-- 没装 Honeyview 或格式判断不了时，大包仍会同步解压；建议装 Honeyview 提速度。
+- 自动填密码依赖 Honeyview 密码框的控件结构（5.53 已验证：`#32770` + `Edit` ID 1151 +
+  `Button` ID 1）。Honeyview 以后若改控件，自动填入会失败，用户手动输入即可。
+- 没装 Honeyview 或原生启动失败时，大包仍会同步解压；建议装 Honeyview 提速度。
 - 兜底到 7z.exe 时密码仍会进命令行（仅当进程内方式打不开该格式）。
 - 预览目录优先 `%TEMP%`，建不了再退 `%LOCALAPPDATA%`；关闭归档时删除本归档的预览根，
   另外按 72 小时清理历史残留。
