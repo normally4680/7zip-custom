@@ -438,6 +438,37 @@ std::wstring LowerExt(const std::wstring &path)
   return ext;
 }
 
+struct FormatCandidate
+{
+  UInt32 index;
+  bool nameMatch;
+};
+
+void BuildFormatOrder(const SevenZipApi &api, UInt32 numFormats,
+                      const std::wstring &archivePath,
+                      std::vector<FormatCandidate> &order)
+{
+  order.clear();
+  const std::wstring ext = LowerExt(archivePath);
+  for (UInt32 i = 0; i < numFormats; ++i)
+  {
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    if (api.getHandlerProperty2(i, NArchive::NHandlerPropID::kName, &v) == S_OK && v.vt == VT_BSTR)
+    {
+      std::wstring name = v.bstrVal;
+      for (auto &c : name)
+        c = (wchar_t)::towlower(c);
+      const bool nameMatch = !ext.empty() && name.find(ext) != std::wstring::npos;
+      if (nameMatch)
+        order.insert(order.begin(), { i, true });
+      else
+        order.push_back({ i, false });
+    }
+    PropVariantClear(&v);
+  }
+}
+
 } // namespace
 
 bool ExtractImagesInProcess(const wchar_t *dllPath,
@@ -467,26 +498,8 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
   }
 
   // 先按扩展名找匹配的 handler，再不行就全试
-  const std::wstring ext = LowerExt(archivePath);
-  struct FormatCandidate { UInt32 index; bool nameMatch; };
   std::vector<FormatCandidate> order;
-  for (UInt32 i = 0; i < numFormats; ++i)
-  {
-    PROPVARIANT v;
-    PropVariantInit(&v);
-    if (api.getHandlerProperty2(i, NArchive::NHandlerPropID::kName, &v) == S_OK && v.vt == VT_BSTR)
-    {
-      std::wstring name = v.bstrVal;
-      for (auto &c : name)
-        c = (wchar_t)::towlower(c);
-      const bool nameMatch = !ext.empty() && name.find(ext) != std::wstring::npos;
-      if (nameMatch)
-        order.insert(order.begin(), { i, true });
-      else
-        order.push_back({ i, false });
-    }
-    PropVariantClear(&v);
-  }
+  BuildFormatOrder(api, numFormats, archivePath, order);
 
   CMyComPtr<IInArchive> archive;
   CMyComPtr<IInStream> stream;
@@ -625,6 +638,65 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
 
   extractedCount = ecsSpec->Written;
   return extractedCount > 0;
+}
+
+bool ArchiveIsEncrypted(const wchar_t *dllPath, const std::wstring &archivePath,
+                        bool &encrypted)
+{
+  encrypted = false;
+  const SevenZipApi api = LoadApi(dllPath);
+  if (!api.ok)
+    return false;
+
+  UInt32 numFormats = 0;
+  if (api.getNumberOfFormats(&numFormats) != S_OK || numFormats == 0)
+    return false;
+
+  std::vector<FormatCandidate> order;
+  BuildFormatOrder(api, numFormats, archivePath, order);
+
+  CMyComPtr<IInArchive> archive;
+  CMyComPtr<IInStream> stream;
+  bool opened = false;
+  for (const FormatCandidate &c : order)
+  {
+    bool asked = false;
+    if (TryOpenWithFormat(api, c.index, archivePath, std::wstring(), &asked,
+                          archive, stream) == S_OK)
+    {
+      opened = true;
+      break;
+    }
+    archive.Release();
+    stream.Release();
+    // 扩展名对上了、也向我们要过密码：头部加密，空密码打不开
+    if (c.nameMatch && asked)
+    {
+      encrypted = true;
+      return true;
+    }
+  }
+  if (!opened)
+    return false;
+
+  UInt32 numItems = 0;
+  if (archive->GetNumberOfItems(&numItems) != S_OK)
+    return false;
+
+  for (UInt32 i = 0; i < numItems; ++i)
+  {
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    const bool got = archive->GetProperty(i, kpidEncrypted, &v) == S_OK;
+    const bool enc = got && v.vt == VT_BOOL && v.boolVal != VARIANT_FALSE;
+    PropVariantClear(&v);
+    if (enc)
+    {
+      encrypted = true;
+      break;
+    }
+  }
+  return true;
 }
 
 } // namespace custom

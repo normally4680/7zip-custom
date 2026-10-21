@@ -41,6 +41,18 @@ bool IsImageFile(const wchar_t *name);
 // 防止恶意归档把预览文件写到临时目录之外。
 bool IsSafeInnerPath(const std::wstring &rel);
 
+// 7-Zip 有时传"归档路径 + 归档内路径"拼成的虚拟路径，这里统一成归档内相对路径。
+std::wstring NormalizeInnerPath(const std::wstring &archivePath,
+                                const std::wstring &innerRelPath);
+
+// 找 Honeyview（它能直接解析压缩包，不需要解压）。
+std::wstring FindHoneyview();
+
+// 用 Honeyview 直接打开归档内某张图，路径格式为 "archive|inner"。
+bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
+                            const std::wstring &archivePath,
+                            const std::wstring &innerRelPath);
+
 // innerRelPath : 归档内相对路径，用 '/' 或 '\' 分隔都行
 // password     : 可以为空；空的时候用空密码试，失败就返回 false 让 7-Zip 走原流程
 // launch       : true = 解完直接 ShellExecute；false = 只准备文件（自测用）

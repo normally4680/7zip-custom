@@ -21,6 +21,7 @@
 
 #include "../Core/ImagePreview.h"
 #include "../Core/PasswordVault.h"
+#include "../Core/SevenZipInProc.h"
 
 namespace {
 
@@ -506,6 +507,33 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   wchar_t nolaunch[8];
   const bool launch = ::GetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", nolaunch,
                                                 (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
+
+  // 首选：Honeyview 能直接解析压缩包（archive|inner），完全不需要解压，
+  // 大包也不会卡 UI。只对"确定未加密"的归档走这条；加密包仍走解压 + 密码框。
+  if (launch)
+  {
+    const std::wstring hv = custom::FindHoneyview();
+    if (!hv.empty())
+    {
+      bool encrypted = false;
+      const std::wstring dll = ModuleDir() + L"7z.dll";
+      const bool known = custom::ArchiveIsEncrypted(dll.c_str(), archivePath, encrypted);
+      if (known && !encrypted)
+      {
+        const std::wstring inner = custom::NormalizeInnerPath(archivePath, itemRelPath);
+        if (!inner.empty() && custom::IsSafeInnerPath(inner) &&
+            custom::LaunchHoneyviewArchive(hv, archivePath, inner))
+        {
+          DebugLog(L"TryOpenImage.native", (L"honeyview: " + inner).c_str());
+          return 1;
+        }
+      }
+      DebugLog(L"TryOpenImage.native",
+               !known ? L"(cannot inspect, fallback)"
+                      : (encrypted ? L"(encrypted, fallback)"
+                                   : L"(launch failed, fallback)"));
+    }
+  }
 
   custom::PreviewResult r = custom::PrepareImagePreview(
       archivePath, itemRelPath, pwd, launch);

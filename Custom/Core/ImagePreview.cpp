@@ -306,6 +306,21 @@ bool FileExistsSimple(const std::wstring &p)
   return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+std::wstring ReadRegString(HKEY root, const wchar_t *subKey, const wchar_t *valueName)
+{
+  wchar_t val[MAX_PATH * 2] = {};
+  DWORD sz = (DWORD)sizeof(val);
+  if (::RegGetValueW(root, subKey, valueName, RRF_RT_REG_SZ, nullptr, val, &sz) == ERROR_SUCCESS)
+    return val;
+  return std::wstring();
+}
+
+std::wstring FileNameOf(const std::wstring &path)
+{
+  const size_t pos = path.find_last_of(L"\\/");
+  return (pos == std::wstring::npos) ? path : path.substr(pos + 1);
+}
+
 std::wstring FindImageViewer()
 {
   // 1) 配置文件里指定的
@@ -730,6 +745,97 @@ bool IsSafeInnerPath(const std::wstring &rel)
   return true;
 }
 
+std::wstring NormalizeInnerPath(const std::wstring &archivePath,
+                                const std::wstring &innerRelPath)
+{
+  std::wstring inner = innerRelPath;
+  if (inner.size() > archivePath.size() &&
+      _wcsnicmp(inner.c_str(), archivePath.c_str(), archivePath.size()) == 0)
+    inner = inner.substr(archivePath.size());
+  while (!inner.empty() && (inner[0] == L'\\' || inner[0] == L'/'))
+    inner.erase(inner.begin());
+  return inner;
+}
+
+std::wstring FindHoneyview()
+{
+  // 1) config.ini 里显式指定的（必须真的是 Honeyview）
+  const std::wstring configured = ReadConfigValue(L"path");
+  if (!configured.empty())
+  {
+    if (FileExistsSimple(configured) &&
+        _wcsicmp(FileNameOf(configured).c_str(), L"Honeyview.exe") == 0)
+      return configured;
+    // 用户明确指定了别的看图程序，尊重配置，不走 Honeyview 原生模式
+    return std::wstring();
+  }
+
+  // 2) Bandisoft 自己登记的安装路径 / App Paths
+  const wchar_t * const kRegRoots[] = { L"HKEY_LOCAL_MACHINE", L"HKEY_CURRENT_USER" };
+  for (const wchar_t *rootName : kRegRoots)
+  {
+    const HKEY root = (::lstrcmpiW(rootName, L"HKEY_CURRENT_USER") == 0) ? HKEY_CURRENT_USER
+                                                                        : HKEY_LOCAL_MACHINE;
+    std::wstring p = ReadRegString(root, L"Software\\Honeyview", L"ProgramPath");
+    if (!p.empty() && FileExistsSimple(p))
+      return p;
+    p = ReadRegString(root, L"Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Honeyview.exe",
+                      nullptr);
+    if (!p.empty() && FileExistsSimple(p))
+      return p;
+    p = ReadRegString(root, L"Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Honeyview.exe",
+                      nullptr);
+    if (!p.empty() && FileExistsSimple(p))
+      return p;
+  }
+
+  // 3) 常见安装目录
+  static const wchar_t * const kCandidates[] = {
+    L"C://Program Files//Honeyview//Honeyview.exe",
+    L"C://Program Files (x86)//Honeyview//Honeyview.exe",
+    L"D://Honeyview//Honeyview.exe",
+    L"D://Program Files//Honeyview//Honeyview.exe",
+    L"D://Program Files (x86)//Honeyview//Honeyview.exe",
+    L"C://Program Files//Bandizip//Honeyview.exe"
+  };
+  for (const wchar_t *c : kCandidates)
+    if (FileExistsSimple(c))
+      return c;
+
+  return std::wstring();
+}
+
+bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
+                            const std::wstring &archivePath,
+                            const std::wstring &innerRelPath)
+{
+  if (honeyviewExe.empty() || archivePath.empty() || innerRelPath.empty())
+    return false;
+
+  std::wstring inner = innerRelPath;
+  for (auto &c : inner)
+    if (c == L'/')
+      c = L'\\';
+  if (!IsSafeInnerPath(inner))
+    return false;
+
+  // Honeyview 的虚拟路径格式："<归档>|<归档内路径>"（Bandizip 也是这样调的）
+  std::wstring cmd = L"\"" + honeyviewExe + L"\" \"" + archivePath + L"|" + inner + L"\"";
+  const size_t slash = archivePath.find_last_of(L"\\/");
+  const std::wstring workDir = (slash == std::wstring::npos)
+      ? std::wstring() : archivePath.substr(0, slash);
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!::CreateProcessW(honeyviewExe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0,
+                        nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
+    return false;
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
 void DeleteTree(const std::wstring &path)
 {
   WIN32_FIND_DATAW fd;
@@ -818,12 +924,7 @@ PreviewResult PrepareImagePreview(const std::wstring &archivePath,
   // 传进来的可能是"归档内完整虚拟路径"（D://x.7z//风景//1.png），也可能是
   // 仅仅"相对于当前面板目录"的文件名（1.png，7-Zip 的 GetItemRelPath 就是这样）。
   // 统一成"归档内相对路径"，否则算出来的目标文件路径会和 7z.exe 实际解出的位置不一致。
-  std::wstring inner = innerRelPath;
-  if (inner.size() > archivePath.size() &&
-      _wcsnicmp(inner.c_str(), archivePath.c_str(), archivePath.size()) == 0)
-    inner = inner.substr(archivePath.size());
-  while (!inner.empty() && (inner[0] == L'\\' || inner[0] == L'/'))
-    inner.erase(inner.begin());
+  std::wstring inner = NormalizeInnerPath(archivePath, innerRelPath);
 
   std::wstring innerDir, fileName;
   SplitInnerPath(inner, innerDir, fileName);
