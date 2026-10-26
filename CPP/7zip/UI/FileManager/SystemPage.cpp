@@ -262,6 +262,11 @@ bool CSystemPage::OnInit()
   if (_listView.GetItemCount() > 0)
     _listView.SetItemState(0, LVIS_FOCUSED, LVIS_FOCUSED);
 
+  // 7zip-custom: rewrite associations on every OK/Apply. This refreshes old
+  // v1.0.2 ProgIDs (stale path/icon index) and writes the Applications /
+  // Capabilities registration needed by Windows' "Always use this app".
+  _needSave = true;
+
   return CPropertyPage::OnInit();
 }
 
@@ -294,15 +299,17 @@ LONG CSystemPage::OnApply()
     {
       CModifiedExtInfo &mi = assoc.Pair[g];
       HKEY key = GetHKey(g);
-      
-      // 7zip-custom: also rewrite associations that were already set to 7-Zip,
-      // so old v1.0.2 ProgIDs (stale path / icon index 0) and missing
-      // Applications registration are refreshed when the user clicks OK.
-      if (mi.OldState != mi.State || mi.State == kExtState_7Zip)
+
+      // 7zip-custom: also rewrite associations that already point to some
+      // 7-Zip build (Other7Zip), even if its path/icon differs from this one.
+      // This is what refreshes v1.0.2 leftovers after the package moved.
+      const bool is7zip = (mi.State == kExtState_7Zip || mi.Other7Zip);
+
+      if (mi.OldState != mi.State || is7zip)
       {
         LONG res2 = 0;
         
-        if (mi.State == kExtState_7Zip)
+        if (is7zip)
         {
           UString title = extInfo.Ext;
           title += " Archive";
@@ -316,7 +323,15 @@ LONG CSystemPage::OnApply()
         if (res == 0)
           res = res2;
         if (res2 == 0)
+        {
+          if (is7zip)
+          {
+            mi.State = kExtState_7Zip;
+            mi.Other = false;
+            mi.Other7Zip = false;
+          }
           mi.OldState = mi.State;
+        }
         
         mi.State = mi.OldState;
         RefreshListItem(g, listIndex);

@@ -338,3 +338,9 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
   重新关联并选一次“始终”即可。图标未更新时先确认默认程序，再刷新图标缓存/重启 Explorer。
 - `SystemPage::OnApply` 对“已经是 7-Zip”的类型也会重写，点一次确定/应用即可修复旧版
   留下的旧路径和旧图标索引；末尾已有 `SHChangeNotify`。
+- 同时注册 `HKCU\Software\RegisteredApplications\7-Zip` 和
+  `HKCU\Software\7-Zip\Capabilities\FileAssociations\.<ext>`，这样“设置 → 默认应用”
+  里能看到 7-Zip File Manager。
+- `SystemPage` 把 `Other7Zip`（ProgID 仍是 `7-Zip.*`，但图标路径来自旧包）也视为需要重写；
+  并把 `_needSave` 在初始化时置 true，这样每次点“确定/应用”都会重写已有 7-Zip 关联，
+  自动修复 v1.0.2 留下的旧路径和旧图标索引。
