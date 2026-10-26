@@ -295,7 +295,10 @@ LONG CSystemPage::OnApply()
       CModifiedExtInfo &mi = assoc.Pair[g];
       HKEY key = GetHKey(g);
       
-      if (mi.OldState != mi.State)
+      // 7zip-custom: also rewrite associations that were already set to 7-Zip,
+      // so old v1.0.2 ProgIDs (stale path / icon index 0) and missing
+      // Applications registration are refreshed when the user clicks OK.
+      if (mi.OldState != mi.State || mi.State == kExtState_7Zip)
       {
         LONG res2 = 0;
         
