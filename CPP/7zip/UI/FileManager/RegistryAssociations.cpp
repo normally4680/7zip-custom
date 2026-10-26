@@ -14,7 +14,7 @@ using namespace NWindows;
 using namespace NRegistry;
 
 namespace NRegistryAssoc {
-  
+
 // static NSynchronization::CCriticalSection g_CriticalSection;
 
 static const TCHAR * const kClasses = TEXT("Software\\Classes\\");
@@ -42,6 +42,64 @@ static CSysString GetFullKeyPath(HKEY hkey, const CSysString &name)
 static CSysString GetExtKeyPath(HKEY hkey, const CSysString &ext)
 {
   return GetFullKeyPath(hkey, (TEXT(".")) + ext);
+}
+
+// 7zip-custom: register the application itself (per hkey) so Explorer offers
+// "Always use this app" in the Open With dialog. Without this, Windows only
+// shows "Just once" for an unpackaged portable exe.
+static void RegisterApplicationInfo(HKEY hkey, const CSysString &ext,
+    const UString &programOpenCommand, const UString &iconPath, int iconIndex)
+{
+  CKey apps;
+  if (apps.Create(hkey, GetFullKeyPath(hkey, TEXT("Applications"))) != ERROR_SUCCESS)
+    return;
+
+  CKey app;
+  if (app.Create(apps, TEXT("7zFM.exe")) != ERROR_SUCCESS)
+    return;
+
+  app.SetValue(TEXT("FriendlyAppName"), TEXT("7-Zip File Manager"));
+
+  {
+    CKey iconKey;
+    if (iconKey.Create(app, kDefaultIconKeyName) == ERROR_SUCCESS)
+    {
+      UString iconFull = iconPath;
+      iconFull.Add_Char(',');
+      iconFull.Add_UInt32(iconIndex < 0 ? 0 : (UInt32)iconIndex);
+      iconKey.SetValue(NULL, iconFull);
+    }
+  }
+
+  {
+    CKey shellKey, openKey, commandKey;
+    if (shellKey.Create(app, kShellKeyName) == ERROR_SUCCESS &&
+        openKey.Create(shellKey, kOpenKeyName) == ERROR_SUCCESS &&
+        commandKey.Create(openKey, kCommandKeyName) == ERROR_SUCCESS)
+      commandKey.SetValue(NULL, programOpenCommand);
+  }
+
+  {
+    CKey typesKey;
+    if (typesKey.Create(app, TEXT("SupportedTypes")) == ERROR_SUCCESS)
+    {
+      CSysString dotted (TEXT("."));
+      dotted += ext;
+      typesKey.SetValue(dotted, TEXT(""));
+    }
+  }
+}
+
+static void UnregisterApplicationInfo(HKEY hkey, const CSysString &ext)
+{
+  CKey typesKey;
+  if (typesKey.Open(hkey, GetFullKeyPath(hkey, TEXT("Applications\\7zFM.exe\\SupportedTypes")),
+                    KEY_SET_VALUE) == ERROR_SUCCESS)
+  {
+    CSysString dotted (TEXT("."));
+    dotted += ext;
+    typesKey.DeleteValue(dotted);
+  }
 }
 
 bool CShellExtInfo::ReadFromRegistry(HKEY hkey, const CSysString &ext)
@@ -99,6 +157,7 @@ LONG DeleteShellExtensionInfo(HKEY hkey, const CSysString &ext)
   // then we delete only 7-Zip.* key.
   rootKey.RecurseDeleteKey(GetFullKeyPath(hkey, GetExtProgramKeyName(ext)));
   rootKey.Detach();
+  UnregisterApplicationInfo(hkey, ext);
   return res;
 }
 
@@ -161,6 +220,8 @@ LONG AddShellExtensionInfo(HKEY hkey,
   CKey commandKey;
   commandKey.Create(openKey, kCommandKeyName);
   commandKey.SetValue(NULL, programOpenCommand);
+
+  RegisterApplicationInfo(hkey, ext, programOpenCommand, iconPath, iconIndex);
   return res;
 }
 
