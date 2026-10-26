@@ -344,3 +344,7 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 - `SystemPage` 把 `Other7Zip`（ProgID 仍是 `7-Zip.*`，但图标路径来自旧包）也视为需要重写；
   并把 `_needSave` 在初始化时置 true，这样每次点“确定/应用”都会重写已有 7-Zip 关联，
   自动修复 v1.0.2 留下的旧路径和旧图标索引。
+- 修复共享 ProgID 残留：上游对无图标格式使用共享 `7-Zip.*`，升级后会出现
+  “.rar 在系统设置里显示 apfs Archive”这类症状。现在始终写每扩展名独立的
+  `7-Zip.<ext>`，并在关联/取消时删除 `7-Zip.*`；实测 `.rar` 从 `7-Zip.*`
+  重写为 `7-Zip.rar`（rar Archive / icon 3）。
