@@ -130,16 +130,20 @@ int wmain(int argc, wchar_t **argv)
   const int count = ::GetMenuItemCount(m);
   printf("菜单栏共 %d 项：\n", count);
   int vaultPos = -1;
+  int extrasPos = -1;
   for (int i = 0; i < count; ++i)
   {
     const std::wstring t = MenuText(m, i);
     printf("  [%d] %s\n", i, Utf8(t).c_str());
     if (t.find(L"\u5bc6\u7801\u5e93") != std::wstring::npos)
       vaultPos = i;
+    if (t.find(L"\u9644\u52a0\u529f\u80fd") != std::wstring::npos)
+      extrasPos = i;
   }
 
-  Check(count == 7, "菜单栏从 6 项变成 7 项");
+  Check(count == 8, "菜单栏从 6 项变成 8 项");
   Check(vaultPos == 5, "\"密码库\"插在\"帮助\"之前");
+  Check(extrasPos == 6, "\"附加功能\"插在\"密码库\"之后");
   if (vaultPos >= 0)
   {
     HMENU sub = ::GetSubMenu(m, vaultPos);
@@ -148,6 +152,15 @@ int wmain(int argc, wchar_t **argv)
     for (int i = 0; i < n; ++i)
       printf("    - %s\n", Utf8(MenuText(sub, i)).c_str());
     Check(n == 6, "子菜单 6 项（含分隔线与诊断信息）");
+  }
+  if (extrasPos >= 0)
+  {
+    HMENU sub = ::GetSubMenu(m, extrasPos);
+    const int n = ::GetMenuItemCount(sub);
+    printf("附加功能子菜单 %d 项：\n", n);
+    for (int i = 0; i < n; ++i)
+      printf("    - %s\n", Utf8(MenuText(sub, i)).c_str());
+    Check(n == 4, "附加功能子菜单 4 项（注册/取消/分隔线/程序目录）");
   }
 
   // 幂等：再调一次不应该出现第二个"密码库"
