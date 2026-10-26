@@ -200,6 +200,9 @@ LONG DeleteShellExtensionInfo(HKEY hkey, const CSysString &ext)
   LONG res = rootKey.RecurseDeleteKey(GetExtKeyPath(hkey, ext));
   // then we delete only 7-Zip.* key.
   rootKey.RecurseDeleteKey(GetFullKeyPath(hkey, GetExtProgramKeyName(ext)));
+  // 7zip-custom: also drop the legacy shared ProgID ("7-Zip.*") that older
+  // builds created for formats without an icon mapping.
+  rootKey.RecurseDeleteKey(GetFullKeyPath(hkey, GetExtProgramKeyName(TEXT("*"))));
   rootKey.Detach();
   UnregisterApplicationInfo(hkey, ext);
   return res;
@@ -216,13 +219,10 @@ LONG AddShellExtensionInfo(HKEY hkey,
   LONG res = 0;
   DeleteShellExtensionInfo(hkey, ext);
   // NSynchronization::CCriticalSectionLock lock(g_CriticalSection);
-  CSysString programKeyName;
-  {
-    CSysString ext2 (ext);
-    if (iconIndex < 0)
-      ext2 = "*";
-    programKeyName = GetExtProgramKeyName(ext2);
-  }
+  // 7zip-custom: always use a per-extension ProgID. The upstream code shared
+  // "7-Zip.*" for formats without an icon mapping, which left a stale friendly
+  // name (".rar" showing "apfs Archive") after upgrades.
+  const CSysString programKeyName = GetExtProgramKeyName(ext);
   {
     CKey extKey;
     res = extKey.Create(hkey, GetExtKeyPath(hkey, ext));
