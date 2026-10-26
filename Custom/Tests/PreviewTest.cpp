@@ -5,6 +5,7 @@
 
 #include "../Core/ImagePreview.h"
 #include "../Core/SevenZipInProc.h"
+#include "../Core/ShellIntegration.h"
 
 // 直接调用 hook 层，验证"密码为空时自动查库"这条链路
 extern "C" int __cdecl CustomHook_TryOpenImage(const wchar_t *archivePath,
@@ -109,6 +110,29 @@ int wmain(int argc, wchar_t **argv)
     printf("launch=%d inner=%s autofill=%d\n", (int)ok, Utf8(inner).c_str(), (int)!pwd.empty());
     if (ok && !pwd.empty())
       ::Sleep(5000);   // 等后台线程把密码填进 Honeyview 的密码框
+    return ok ? 0 : 1;
+  }
+
+  // 按用户注册右键菜单（测试用）
+  if (wcscmp(argv[1], L"--shell-state") == 0)
+  {
+    std::wstring dll;
+    const bool reg = custom::IsShellContextMenuRegistered(dll);
+    printf("registered=%d dll=%s\n", (int)reg, Utf8(dll).c_str());
+    return 0;
+  }
+  if (wcscmp(argv[1], L"--shell-register") == 0)
+  {
+    std::wstring err;
+    const bool ok = custom::RegisterShellContextMenu(err);
+    printf("register=%d error=%s\n", (int)ok, Utf8(err).c_str());
+    return ok ? 0 : 1;
+  }
+  if (wcscmp(argv[1], L"--shell-unregister") == 0)
+  {
+    std::wstring err;
+    const bool ok = custom::UnregisterShellContextMenu(err);
+    printf("unregister=%d error=%s\n", (int)ok, Utf8(err).c_str());
     return ok ? 0 : 1;
   }
 

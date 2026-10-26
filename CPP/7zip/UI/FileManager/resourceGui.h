@@ -1,4 +1,5 @@
-#define IDI_ICON  1
+// 7zip-custom: moved from 1 to 1000 so 7zFM can use icon IDs 0..26 for file types.
+#define IDI_ICON  1000
 
 #define IDS_MESSAGE_NO_ERRORS           3001
 

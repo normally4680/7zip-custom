@@ -22,6 +22,7 @@
 #include "../Core/ImagePreview.h"
 #include "../Core/PasswordVault.h"
 #include "../Core/SevenZipInProc.h"
+#include "../Core/ShellIntegration.h"
 
 namespace {
 
@@ -641,7 +642,10 @@ enum
   kCmdVaultManager = 0x7A01,
   kCmdVaultAdd     = 0x7A02,
   kCmdVaultFolder  = 0x7A03,
-  kCmdVaultDiag    = 0x7A04
+  kCmdVaultDiag    = 0x7A04,
+  kCmdShellRegister   = 0x7A05,
+  kCmdShellUnregister = 0x7A06,
+  kCmdOpenAppDir      = 0x7A07
 };
 
 const UINT_PTR kSubclassId = 0x7A99;
@@ -653,6 +657,18 @@ bool MenuHasVault(HMENU main)
   {
     HMENU sub = ::GetSubMenu(main, i);
     if (sub && ::GetMenuState(sub, kCmdVaultManager, MF_BYCOMMAND) != (UINT)-1)
+      return true;
+  }
+  return false;
+}
+
+bool MenuHasExtras(HMENU main)
+{
+  const int count = ::GetMenuItemCount(main);
+  for (int i = 0; i < count; ++i)
+  {
+    HMENU sub = ::GetSubMenu(main, i);
+    if (sub && ::GetMenuState(sub, kCmdShellRegister, MF_BYCOMMAND) != (UINT)-1)
       return true;
   }
   return false;
@@ -714,6 +730,12 @@ void ShowDiagnostics(HWND hwnd)
     const std::wstring hv = custom::FindHoneyview();
     msg += hv.empty() ? L"解压到临时目录（未找到 Honeyview）"
                       : (L"Honeyview 原生：" + hv);
+  }
+
+  msg += L"\n右键菜单: ";
+  {
+    std::wstring reg;
+    msg += custom::IsShellContextMenuRegistered(reg) ? L"已注册（当前用户）" : L"未注册";
   }
 
   wchar_t tmp[MAX_PATH] = {};
@@ -790,6 +812,32 @@ void OnVaultCommand(HWND hwnd, unsigned cmd)
         ::ShellExecuteW(hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       break;
     }
+    case kCmdShellRegister:
+    {
+      std::wstring err;
+      if (custom::RegisterShellContextMenu(err))
+        ::MessageBoxW(hwnd,
+            L"已为当前用户注册右键菜单。\n\n"
+            L"在资源管理器中右键文件或文件夹即可看到 7-Zip。\n"
+            L"不需要管理员权限；取消勾选/取消注册即可移除。",
+            L"右键菜单", MB_ICONINFORMATION);
+      else
+        ::MessageBoxW(hwnd, err.c_str(), L"右键菜单", MB_ICONERROR);
+      break;
+    }
+    case kCmdShellUnregister:
+    {
+      std::wstring err;
+      if (custom::UnregisterShellContextMenu(err))
+        ::MessageBoxW(hwnd, L"已取消当前用户的右键菜单注册。", L"右键菜单",
+                      MB_ICONINFORMATION);
+      else
+        ::MessageBoxW(hwnd, err.c_str(), L"右键菜单", MB_ICONERROR);
+      break;
+    }
+    case kCmdOpenAppDir:
+      ::ShellExecuteW(hwnd, L"open", ModuleDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+      break;
   }
 }
 
@@ -799,7 +847,7 @@ LRESULT CALLBACK MainWndSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   if (msg == WM_COMMAND)
   {
     const unsigned cmd = LOWORD(wp);
-    if (cmd >= kCmdVaultManager && cmd <= kCmdVaultDiag)
+    if (cmd >= kCmdVaultManager && cmd <= kCmdOpenAppDir)
     {
       OnVaultCommand(hwnd, cmd);
       return 0;
@@ -829,6 +877,7 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
   }
 
   // 菜单重建后会被重新调用：已经有就不重复插入
+  bool changed = false;
   if (!MenuHasVault(main))
   {
     HMENU sub = ::CreatePopupMenu();
@@ -850,8 +899,33 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
       ::DestroyMenu(sub);
       return 0;
     }
-    ::DrawMenuBar(hwnd);
+    changed = true;
   }
+
+  if (!MenuHasExtras(main))
+  {
+    HMENU sub = ::CreatePopupMenu();
+    if (!sub)
+      return 0;
+
+    ::AppendMenuW(sub, MF_STRING, kCmdShellRegister,
+                  L"注册右键菜单（当前用户）(&R)");
+    ::AppendMenuW(sub, MF_STRING, kCmdShellUnregister, L"取消右键菜单(&U)");
+    ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(sub, MF_STRING, kCmdOpenAppDir, L"打开程序目录(&O)");
+
+    const int count = ::GetMenuItemCount(main);
+    const int pos = (count > 0) ? count - 1 : 0;
+    if (!::InsertMenuW(main, (UINT)pos, MF_BYPOSITION | MF_POPUP, (UINT_PTR)sub, L"附加功能(&X)"))
+    {
+      ::DestroyMenu(sub);
+      return 0;
+    }
+    changed = true;
+  }
+
+  if (changed)
+    ::DrawMenuBar(hwnd);
 
   ::SetWindowSubclass(hwnd, MainWndSubclass, kSubclassId, 0);
   DebugLog(L"AttachMainMenu", L"ok");

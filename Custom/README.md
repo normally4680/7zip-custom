@@ -302,3 +302,25 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 - 不建议为了“两条分支完全独立”重写历史：两个功能共享 hook 和密码流程，
   拆开后的维护成本高于收益；控制升级成本的关键是保持 `Custom/` 自包含、
   `CPP/` 注入点最小。
+
+## 十五、右键菜单与逐格式图标（2026-10-26）
+
+**壳扩展（便携、按用户）**
+
+- `7-zip.dll` 从 `CPP/7zip/UI/Explorer` 构建（build-msvc target `7zshl`），随便携包发布。
+- `Custom/Core/ShellIntegration.cpp` 写 HKCU：
+  - `Software\Classes\CLSID\{23170F69-...}\InprocServer32` → 当前目录的 `7-zip.dll`
+  - `Software\Classes\*\shellex\ContextMenuHandlers\7-Zip`（以及 Folder/Directory）
+  - `Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Approved`
+  - 写完后 `SHChangeNotify(SHCNE_ASSOCCHANGED)`
+- 菜单栏「附加功能」提供“注册右键菜单（当前用户）/ 取消右键菜单”，不需要管理员。
+- 同时把上游 `RegistryContextMenu.cpp` 的写入从 HKCR/HKLM 改为 HKCU，
+  系统选项页里的“添加 7-Zip 到右键菜单”在非管理员下也可用；取消时会删除 per-user handler 键。
+
+**逐格式图标**
+
+- `Bundles/Fm/resource.rc` 补了 `Format7zF` 的 0..26 图标资源和
+  `7z:0 zip:1 rar:3 ...` 映射，7zFM 的关联对话框不再把全部类型显示成同一个 7z 图标。
+- `IDI_ICON` 从 1 移到 1000，避免和 zip 图标（ID 1）冲突；7zFM 主图标因此变成 ID 0 的 7z 图标。
+- 关联时 `GetIconPath` 返回 `7zFM.exe,<index>`，每个扩展名写成独立的 `7-Zip.<ext>` ProgID 和 DefaultIcon。
+- 已用 `ExtractIconEx` 验证 index 0/1/3/8/23 分别是 7z/ZIP/RAR/ISO/XZ。

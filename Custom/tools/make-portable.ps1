@@ -16,7 +16,7 @@ $stage = Join-Path $out "7zip-custom-portable"
 if (-not $Version) { $Version = Get-Date -Format "yyyy-MM-dd" }
 $Version = $Version -replace '[^\w\.\-]', '-'
 
-$files = @("7zFM.exe", "7zG.exe", "7z.exe", "7z.dll", "7zVault.exe", "7zVaultUi.dll")
+$files = @("7zFM.exe", "7zG.exe", "7z.exe", "7z.dll", "7-zip.dll", "7zVault.exe", "7zVaultUi.dll")
 
 Write-Host "== staging portable package ($Version)"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
