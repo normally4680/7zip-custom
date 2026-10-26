@@ -88,6 +88,35 @@ static void RegisterApplicationInfo(HKEY hkey, const CSysString &ext,
       typesKey.SetValue(dotted, TEXT(""));
     }
   }
+
+  // Register the app in Windows "Default apps" (Capabilities) as well.
+  // Windows 10/11 uses this list to offer a persistent handler.
+  if (hkey == HKEY_CURRENT_USER || hkey == HKEY_LOCAL_MACHINE)
+  {
+    const bool perUser = (hkey == HKEY_CURRENT_USER);
+    const TCHAR *capsPath = perUser ? TEXT("Software\\7-Zip\\Capabilities")
+                                    : TEXT("SOFTWARE\\7-Zip\\Capabilities");
+    const TCHAR *registeredPath = perUser ? TEXT("Software\\RegisteredApplications")
+                                          : TEXT("SOFTWARE\\RegisteredApplications");
+
+    CKey caps;
+    if (caps.Create(hkey, capsPath) == ERROR_SUCCESS)
+    {
+      caps.SetValue(TEXT("ApplicationName"), TEXT("7-Zip File Manager"));
+      caps.SetValue(TEXT("ApplicationDescription"), TEXT("7-Zip File Manager"));
+      CKey fileAssoc;
+      if (fileAssoc.Create(caps, TEXT("FileAssociations")) == ERROR_SUCCESS)
+      {
+        CSysString dotted (TEXT("."));
+        dotted += ext;
+        fileAssoc.SetValue(dotted, GetExtProgramKeyName(ext));
+      }
+    }
+
+    CKey registered;
+    if (registered.Create(hkey, registeredPath) == ERROR_SUCCESS)
+      registered.SetValue(TEXT("7-Zip"), capsPath);
+  }
 }
 
 static void UnregisterApplicationInfo(HKEY hkey, const CSysString &ext)
@@ -99,6 +128,21 @@ static void UnregisterApplicationInfo(HKEY hkey, const CSysString &ext)
     CSysString dotted (TEXT("."));
     dotted += ext;
     typesKey.DeleteValue(dotted);
+  }
+
+  if (hkey == HKEY_CURRENT_USER || hkey == HKEY_LOCAL_MACHINE)
+  {
+    const bool perUser = (hkey == HKEY_CURRENT_USER);
+    const TCHAR *fileAssocPath = perUser
+        ? TEXT("Software\\7-Zip\\Capabilities\\FileAssociations")
+        : TEXT("SOFTWARE\\7-Zip\\Capabilities\\FileAssociations");
+    CKey fileAssoc;
+    if (fileAssoc.Open(hkey, fileAssocPath, KEY_SET_VALUE) == ERROR_SUCCESS)
+    {
+      CSysString dotted (TEXT("."));
+      dotted += ext;
+      fileAssoc.DeleteValue(dotted);
+    }
   }
 }
 
