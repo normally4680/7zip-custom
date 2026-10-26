@@ -324,3 +324,15 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 - `IDI_ICON` 从 1 移到 1000，避免和 zip 图标（ID 1）冲突；7zFM 主图标因此变成 ID 0 的 7z 图标。
 - 关联时 `GetIconPath` 返回 `7zFM.exe,<index>`，每个扩展名写成独立的 `7-Zip.<ext>` ProgID 和 DefaultIcon。
 - 已用 `ExtractIconEx` 验证 index 0/1/3/8/23 分别是 7z/ZIP/RAR/ISO/XZ。
+
+**Windows 默认程序（UserChoice）**
+
+- 关联时还会写 `HKCU\Software\Classes\Applications\7zFM.exe`：
+  `FriendlyAppName`、`SupportedTypes\.<ext>`、`shell\open\command`、`DefaultIcon`。
+  这样“打开方式”里才会出现“始终使用此应用”，否则只有“仅一次”。
+- Windows 10/11 的最终默认值在
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.<ext>\UserChoice`，
+  受哈希保护，程序不能静默修改；第一次仍需用户在“打开方式”里勾选“始终使用此应用”。
+  选项页写 `HKCU\Software\Classes\.<ext>` 只准备 ProgID，UserChoice 存在时会被系统忽略。
+- 旧版（v1.0.2 等）的 `7-Zip.<ext>` ProgID 会被新关联覆盖；若旧包路径已不存在，
+  重新关联并选一次“始终”即可。图标未更新时先确认默认程序，再刷新图标缓存/重启 Explorer。
