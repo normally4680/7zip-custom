@@ -336,3 +336,5 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
   选项页写 `HKCU\Software\Classes\.<ext>` 只准备 ProgID，UserChoice 存在时会被系统忽略。
 - 旧版（v1.0.2 等）的 `7-Zip.<ext>` ProgID 会被新关联覆盖；若旧包路径已不存在，
   重新关联并选一次“始终”即可。图标未更新时先确认默认程序，再刷新图标缓存/重启 Explorer。
+- `SystemPage::OnApply` 对“已经是 7-Zip”的类型也会重写，点一次确定/应用即可修复旧版
+  留下的旧路径和旧图标索引；末尾已有 `SHChangeNotify`。
