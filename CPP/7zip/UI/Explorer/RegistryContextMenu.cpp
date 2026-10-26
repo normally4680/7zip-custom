@@ -2,6 +2,10 @@
 
 #include "StdAfx.h"
 
+// 7zip-custom: the portable build registers the shell extension per-user (HKCU)
+// so the context menu can be enabled without administrator rights.
+#include <shlobj.h>
+
 #include "../../../Common/StringConvert.h"
 
 #include "../../../Windows/Registry.h"
@@ -91,9 +95,11 @@ static LONG MyRegistry_DeleteKey(HKEY parentKey, LPCTSTR name, UInt32 wow)
       (parentKey, GetUnicodeString(name), wow, 0);
 }
 
-static LONG MyRegistry_DeleteKey_HKCR(LPCTSTR name, UInt32 wow)
+static CSysString GetUserClassesPath(const CSysString &name)
 {
-  return MyRegistry_DeleteKey(HKEY_CLASSES_ROOT, name, wow);
+  CSysString full = TEXT("Software\\Classes\\");
+  full += name;
+  return full;
 }
 
 // static NSynchronization::CCriticalSection g_CS;
@@ -163,14 +169,14 @@ LONG SetContextMenuHandler(bool setMode, const UString &path, UInt32 wow)
   LONG res;
 
   {
-  CSysString s ("CLSID\\");
+  CSysString s = GetUserClassesPath(TEXT("CLSID\\"));
   s += k_Clsid_A;
 
   if (setMode)
   {
     {
       CKey key;
-      res = MyCreateKey(key, HKEY_CLASSES_ROOT, s, wow);
+      res = MyCreateKey(key, HKEY_CURRENT_USER, s, wow);
       if (res == ERROR_SUCCESS)
       {
         key.SetValue(NULL, k_ShellExtName);
@@ -186,7 +192,7 @@ LONG SetContextMenuHandler(bool setMode, const UString &path, UInt32 wow)
     
     {
       CKey key;
-      if (MyCreateKey(key, HKEY_LOCAL_MACHINE, k_Approved, wow) == ERROR_SUCCESS)
+      if (MyCreateKey(key, HKEY_CURRENT_USER, k_Approved, wow) == ERROR_SUCCESS)
         key.SetValue(k_Clsid, k_ShellExtName);
     }
   }
@@ -195,30 +201,34 @@ LONG SetContextMenuHandler(bool setMode, const UString &path, UInt32 wow)
     CSysString s2 (s);
     s2 += "\\InprocServer32";
 
-    MyRegistry_DeleteKey_HKCR(s2, wow);
-    res = MyRegistry_DeleteKey_HKCR(s, wow);
+    MyRegistry_DeleteKey(HKEY_CURRENT_USER, s2, wow);
+    res = MyRegistry_DeleteKey(HKEY_CURRENT_USER, s, wow);
+
+    CKey approved;
+    if (approved.Open(HKEY_CURRENT_USER, k_Approved, KEY_SET_VALUE | wow) == ERROR_SUCCESS)
+      approved.DeleteValue(k_Clsid);
   }
   }
 
-  // shellex items probably are shared beween 32-bit and 64-bit apps. So we don't delete items for delete operation.
-  if (setMode)
   for (unsigned i = 0; i < 2; i++)
   {
     for (unsigned k = 0; k < Z7_ARRAY_SIZE(k_shellex_Prefixes); k++)
     {
       CSysString s (k_shellex_Prefixes[k]);
       s += (i == 0 ? k_KeyPostfix_ContextMenu : k_KeyPostfix_DragDrop);
-      if (k_shellex_Statuses[i][k])
+      s = GetUserClassesPath(s);
+      if (setMode && k_shellex_Statuses[i][k])
       {
         CKey key;
-        MyCreateKey(key, HKEY_CLASSES_ROOT, s, wow);
+        MyCreateKey(key, HKEY_CURRENT_USER, s, wow);
         key.SetValue(NULL, k_Clsid);
       }
       else
-        MyRegistry_DeleteKey_HKCR(s, wow);
+        MyRegistry_DeleteKey(HKEY_CURRENT_USER, s, wow);
     }
   }
 
+  ::SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
   return res;
 }
 

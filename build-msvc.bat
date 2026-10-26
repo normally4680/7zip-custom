@@ -7,6 +7,7 @@ REM    7z    -> CPP\7zip\UI\Console         (7z.exe)
 REM    7zg   -> CPP\7zip\UI\GUI             (7zG.exe)
 REM    7zdll -> CPP\7zip\Bundles\Format7zF  (7z.dll)
 REM    7zfm  -> CPP\7zip\Bundles\Fm         (7zFM.exe)
+REM    7zshl -> CPP\7zip\UI\Explorer        (7-zip.dll shell extension)
 REM    7za   -> CPP\7zip\Bundles\Alone      (7za.exe)
 REM    7zz   -> CPP\7zip\Bundles\Alone2     (7zz.exe)
 REM    clean -> remove all intermediate x64 dirs
@@ -58,7 +59,7 @@ echo [ENV] LIB=%LIB%
 echo.
 
 if /i "%~1"=="clean" goto :clean
-if "%~1"=="" ( set "LIST=custom 7zdll 7z 7zg 7zfm vault" ) else (
+if "%~1"=="" ( set "LIST=custom 7zdll 7z 7zg 7zfm 7zshl vault" ) else (
     if /i "%~1"=="custom" ( set "LIST=%*" ) else ( set "LIST=custom %*" )
 )
 
@@ -81,6 +82,7 @@ if exist "%~dp0CPP\7zip\Bundles\Format7zF\x64\7z.dll"  copy /y "%~dp0CPP\7zip\Bu
 if exist "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        copy /y "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        "%OUT%\" >nul
 if exist "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           copy /y "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           "%OUT%\" >nul
 if exist "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      copy /y "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      "%OUT%\" >nul
+if exist "%~dp0CPP\7zip\UI\Explorer\x64\7-zip.dll"    copy /y "%~dp0CPP\7zip\UI\Explorer\x64\7-zip.dll"    "%OUT%\" >nul
 if not exist "%OUT%\Lang" mkdir "%OUT%\Lang"
 copy /y "%~dp0Custom\lang\*.txt" "%OUT%\Lang\" >nul
 copy /y "%~dp0Custom\tools\diagnose.bat" "%OUT%\diagnose.bat" >nul
@@ -96,6 +98,7 @@ if /i "%~1"=="7z"     ( set "NAME=7z.exe"      & set "DIR=CPP\7zip\UI\Console" )
 if /i "%~1"=="7zg"    ( set "NAME=7zG.exe"     & set "DIR=CPP\7zip\UI\GUI" )
 if /i "%~1"=="7zdll"  ( set "NAME=7z.dll"      & set "DIR=CPP\7zip\Bundles\Format7zF" )
 if /i "%~1"=="7zfm"   ( set "NAME=7zFM.exe"    & set "DIR=CPP\7zip\Bundles\Fm" )
+if /i "%~1"=="7zshl"  ( set "NAME=7-zip.dll"   & set "DIR=CPP\7zip\UI\Explorer" )
 if /i "%~1"=="7za"    ( set "NAME=7za.exe"     & set "DIR=CPP\7zip\Bundles\Alone" )
 if /i "%~1"=="7zz"    ( set "NAME=7zz.exe"     & set "DIR=CPP\7zip\Bundles\Alone2" )
 if /i "%~1"=="custom" ( set "NAME=Custom.lib"  & set "DIR=Custom" & set "MK=lib" )

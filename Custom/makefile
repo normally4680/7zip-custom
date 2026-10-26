@@ -35,7 +35,8 @@ LIB_OBJS = \
   $(O)\VaultCrypto.obj \
   $(O)\PasswordVault.obj \
   $(O)\ImagePreview.obj \
-  $(O)\SevenZipInProc.obj
+  $(O)\SevenZipInProc.obj \
+  $(O)\ShellIntegration.obj
 
 APP_OBJS = $(O)\VaultApp.obj $(O)\VaultDialog.obj
 APP_RES  = $(O)\Vault.res
@@ -81,6 +82,10 @@ $(O)\ImagePreview.obj: Core\ImagePreview.cpp Core\ImagePreview.h
 $(O)\PasswordVault.obj: Core\PasswordVault.cpp Core\PasswordVault.h Core\VaultCrypto.h
 	@if not exist "$(O)" mkdir "$(O)"
 	$(CL_TOOL) $(CFLAGS) /Fo$(O)\PasswordVault.obj Core\PasswordVault.cpp
+
+$(O)\ShellIntegration.obj: Core\ShellIntegration.cpp Core\ShellIntegration.h
+	@if not exist "$(O)" mkdir "$(O)"
+	$(CL_TOOL) $(CFLAGS) /Fo$(O)\ShellIntegration.obj Core\ShellIntegration.cpp
 
 # ---------------------------------------------------------- vault manager app
 
