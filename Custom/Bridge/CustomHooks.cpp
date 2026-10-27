@@ -357,6 +357,108 @@ std::wstring WriteProbe(const std::wstring &dir)
   return b;
 }
 
+// ---------------------------------------------------------------- 看图取密码
+
+// 看图前把密码"验明正身"：按优先级逐个候选试解一个条目，第一个真正能用的
+// 胜出。只加密数据、不加密文件名的包，打开时 7-Zip 不会问密码，密码库里
+// 按名字匹配又可能落空——在库里把所有条目都试一遍就能兜住这种情况；
+// 一个都不行时弹我们自己的密码框（带密码库选择），用户取消则返回空串，
+// 让 Honeyview 自己弹它的框（维持老行为）。
+//   hint          : 已知的候选（CFolderLink / 名字匹配查到的库密码），可为空
+//   knownEncrypted: ArchiveIsEncrypted 已确认加密（false = 判断不了）
+//   allowPrompt   : 候选全失败时是否允许弹框
+std::wstring ResolveVerifiedPassword(const std::wstring &dll,
+                                     const std::wstring &archivePath,
+                                     const std::wstring &inner,
+                                     const std::wstring &hint,
+                                     bool knownEncrypted,
+                                     bool allowPrompt)
+{
+  // 候选去重收集：hint → 会话缓存 → 密码库全部条目（封顶 20 条防大库卡顿）
+  std::vector<std::wstring> cands;
+  auto pushCand = [&cands](const std::wstring &p)
+  {
+    if (p.empty() || cands.size() >= 20)
+      return;
+    for (const auto &c : cands)
+      if (c == p)
+        return;
+    cands.push_back(p);
+  };
+
+  pushCand(hint);
+  {
+    std::wstring cached;
+    if (RecallPassword(archivePath.c_str(), cached))
+      pushCand(cached);
+  }
+  {
+    ::AcquireSRWLockShared(&g_lock);
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    if (vault.Load(false))
+    {
+      for (const auto &e : vault.Entries())
+        pushCand(e.password);
+    }
+    ::ReleaseSRWLockShared(&g_lock);
+  }
+
+  std::wstring verifiedPwd;
+  bool fromVault = false;
+  for (const auto &c : cands)
+  {
+    bool ok = false;
+    if (custom::ArchiveTryPassword(dll.c_str(), archivePath, inner, c, ok) && ok)
+    {
+      verifiedPwd = c;
+      // 是不是来自密码库（用于决定要不要把新验证的密码写回库）
+      ::AcquireSRWLockShared(&g_lock);
+      custom::PasswordVault &vault = custom::PasswordVault::Instance();
+      for (const auto &e : vault.Entries())
+        if (e.password == c) { fromVault = true; break; }
+      ::ReleaseSRWLockShared(&g_lock);
+      break;
+    }
+  }
+
+  if (verifiedPwd.empty() && allowPrompt && knownEncrypted)
+  {
+    wchar_t asked[1024] = {};
+    const int a = CustomHook_AskPassword(::GetActiveWindow(), archivePath.c_str(),
+                                         asked, (int)(sizeof(asked) / sizeof(asked[0])));
+    if (a == 1 && asked[0])
+    {
+      bool ok = false;
+      if (custom::ArchiveTryPassword(dll.c_str(), archivePath, inner, asked, ok) && ok)
+        verifiedPwd = asked;
+      else
+        DebugLog(L"ResolvePwd", L"(asked password failed verify)");
+    }
+    ::SecureZeroMemory(asked, sizeof(asked));
+    if (verifiedPwd.empty())
+      DebugLog(L"ResolvePwd", a < 0 ? L"(cancelled)" : L"(ask failed)");
+  }
+
+  if (verifiedPwd.empty())
+  {
+    DebugLog(L"ResolvePwd", L"(no verified password)");
+    return verifiedPwd;
+  }
+
+  DebugLog(L"ResolvePwd", fromVault ? L"(verified, from vault)" : L"(verified, new)");
+  RememberPassword(archivePath.c_str(), verifiedPwd.c_str());
+  if (!fromVault)
+  {
+    // 新验证出来的密码（用户手输/对话框缓存）写回密码库，下次直接命中
+    ::AcquireSRWLockExclusive(&g_lock);
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    if (vault.Load(false))
+      vault.Remember(archivePath, verifiedPwd);
+    ::ReleaseSRWLockExclusive(&g_lock);
+  }
+  return verifiedPwd;
+}
+
 } // namespace
 
 extern "C" int CUSTOM_HOOK_API CustomHook_TryPassword(const wchar_t *archivePath,
@@ -523,8 +625,12 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
       const std::wstring inner = custom::NormalizeInnerPath(archivePath, itemRelPath);
       if (!inner.empty() && custom::IsSafeInnerPath(inner))
       {
-        // 确定未加密就不要启动自动填密码线程；其余情况有密码就带上
-        const std::wstring autofill = (!known || encrypted) ? pwd : std::wstring();
+        // 确定未加密就不取密码；加密（或判断不了）时先验出可用的密码再启动，
+        // 拿未验证的库密码自动填框只会让 Honeyview 填进错误密码。
+        std::wstring autofill;
+        if (!known || encrypted)
+          autofill = ResolveVerifiedPassword(dll, archivePath, inner, pwd,
+                                             known && encrypted, true);
         if (custom::LaunchHoneyviewArchive(hv, archivePath, inner, autofill))
         {
           std::wstring detail = L"honeyview: " + inner;
@@ -544,27 +650,44 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
       archivePath, itemRelPath, pwd, launch);
 
   // 只加密数据、不加密文件名的归档，打开时不会问密码；到预览才发现要密码。
-  // 这里弹一次我们自己的密码框，拿到密码后重试（成功后会记住）。
+  // 先静默把密码库/缓存里能验证过的密码试一遍（验证规则和 Honeyview 原生
+  // 路径一致），不行再弹一次我们自己的密码框，拿到密码后重试。
   if (!r.ok && r.needsPassword && launch)
   {
-    wchar_t asked[1024] = {};
-    const int a = CustomHook_AskPassword(::GetActiveWindow(), archivePath,
-                                         asked, (int)(sizeof(asked) / sizeof(asked[0])));
-    if (a == 1 && asked[0])
+    const std::wstring dll = ModuleDir() + L"7z.dll";
+    if (pwd.empty())
     {
-      pwd = asked;
-      RememberPassword(archivePath, pwd.c_str());
-      DebugLog(L"TryOpenImage.pwd", L"(asked again)");
-      ::SecureZeroMemory(asked, sizeof(asked));
-      r = custom::PrepareImagePreview(archivePath, itemRelPath, pwd, launch);
-    }
-    else
-    {
-      ::SecureZeroMemory(asked, sizeof(asked));
-      if (a < 0)
+      const std::wstring v = ResolveVerifiedPassword(
+          dll, archivePath, custom::NormalizeInnerPath(archivePath, itemRelPath),
+          std::wstring(), true, false);
+      if (!v.empty())
       {
-        DebugLog(L"TryOpenImage.needPwd", L"(cancelled)");
-        return 1;   // 用户取消：不要再让 7-Zip 弹它自己的密码框
+        pwd = v;
+        DebugLog(L"TryOpenImage.pwd", L"(resolved from vault/cache)");
+        r = custom::PrepareImagePreview(archivePath, itemRelPath, pwd, launch);
+      }
+    }
+    if (!r.ok && r.needsPassword)
+    {
+      wchar_t asked[1024] = {};
+      const int a = CustomHook_AskPassword(::GetActiveWindow(), archivePath,
+                                           asked, (int)(sizeof(asked) / sizeof(asked[0])));
+      if (a == 1 && asked[0])
+      {
+        pwd = asked;
+        RememberPassword(archivePath, pwd.c_str());
+        DebugLog(L"TryOpenImage.pwd", L"(asked again)");
+        ::SecureZeroMemory(asked, sizeof(asked));
+        r = custom::PrepareImagePreview(archivePath, itemRelPath, pwd, launch);
+      }
+      else
+      {
+        ::SecureZeroMemory(asked, sizeof(asked));
+        if (a < 0)
+        {
+          DebugLog(L"TryOpenImage.needPwd", L"(cancelled)");
+          return 1;   // 用户取消：不要再让 7-Zip 弹它自己的密码框
+        }
       }
     }
   }
