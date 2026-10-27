@@ -357,6 +357,23 @@ std::wstring WriteProbe(const std::wstring &dir)
   return b;
 }
 
+// Honeyview 的 "archive|inner" 虚拟路径只支持它自己能流式解析的格式。
+// 5.53 实测（PrintWindow 截窗体确认）：zip / tar 能正常显示；
+// 7z 连不加密的都只显示"占位图"，cbz 同样不行，rar 未验证。
+// 所以只有白名单格式走原生模式，其余直接走进程内解压回退——
+// 否则用户会看到 Honeyview 的"图挂了"占位框，还以为密码没传过去。
+bool HoneyviewSupportsVirtualPath(const wchar_t *archivePath)
+{
+  static const wchar_t *const kSupported[] = { L".zip", L".tar" };
+  const wchar_t *dot = ::wcsrchr(archivePath, L'.');
+  if (!dot)
+    return false;
+  for (const wchar_t *e : kSupported)
+    if (::lstrcmpiW(dot, e) == 0)
+      return true;
+  return false;
+}
+
 // ---------------------------------------------------------------- 看图取密码
 
 // 看图前把密码"验明正身"：按优先级逐个候选试解一个条目，第一个真正能用的
@@ -612,12 +629,14 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
                                                 (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
 
   // 首选：Honeyview 能直接解析压缩包（archive|inner），完全不需要解压，
-  // 大包也不会卡 UI。加密包由 Honeyview 自己弹密码框；如果密码库/CFolderLink
-  // 已经有密码，后台会自动填入，用户不用再输一遍。
+  // 大包也不会卡 UI。但它只支持 zip/tar（7z 连不加密的都显示占位图，
+  // 见 HoneyviewSupportsVirtualPath），其余格式直接走下面的解压回退。
+  // 加密 zip 由 Honeyview 自己弹密码框；密码先经过 ResolveVerifiedPassword
+  // 验证，后台自动填入，用户不用再输一遍。
   if (launch)
   {
     const std::wstring hv = custom::FindHoneyview();
-    if (!hv.empty())
+    if (!hv.empty() && HoneyviewSupportsVirtualPath(archivePath))
     {
       bool encrypted = false;
       const std::wstring dll = ModuleDir() + L"7z.dll";
@@ -643,6 +662,10 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
         }
       }
       DebugLog(L"TryOpenImage.native", L"(launch failed, fallback)");
+    }
+    else if (!hv.empty())
+    {
+      DebugLog(L"TryOpenImage.native", L"(format not supported by honeyview, fallback)");
     }
   }
 
