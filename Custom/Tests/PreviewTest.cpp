@@ -123,6 +123,42 @@ int wmain(int argc, wchar_t **argv)
     return ok ? 0 : 1;
   }
 
+  // 整包打开（7z 加密包用）：可选密码后台自动填入
+  if (wcscmp(argv[1], L"--whole") == 0 && argc >= 3)
+  {
+    const std::wstring hv = custom::FindHoneyview();
+    printf("honeyview: %s\n", Utf8(hv).c_str());
+    if (hv.empty())
+      return 1;
+    const std::wstring pwd = (argc >= 4) ? argv[3] : L"";
+    const bool ok = custom::LaunchHoneyviewWholeArchive(hv, argv[2], pwd);
+    printf("whole launch=%d autofill=%d\n", (int)ok, (int)!pwd.empty());
+    if (ok)
+      ::Sleep(6000);
+    return ok ? 0 : 1;
+  }
+
+  // 两步走（7z 未加密 0.4 用）：整包打开 → 竖线定位 → 关整包窗口
+  if (wcscmp(argv[1], L"--twostep") == 0 && argc >= 4)
+  {
+    const std::wstring hv = custom::FindHoneyview();
+    printf("honeyview: %s\n", Utf8(hv).c_str());
+    if (hv.empty())
+      return 1;
+    const bool ok = custom::LaunchHoneyviewWholeThenPipe(hv, argv[2], argv[3]);
+    printf("twostep launch=%d\n", (int)ok);
+    if (ok)
+      ::Sleep(7000);   // 等后台线程走完两步
+    return ok ? 0 : 1;
+  }
+
+  // 打印 7z 签名头里的格式版本（0.3/0.4，竖线兼容性判定用）
+  if (wcscmp(argv[1], L"--7zver") == 0 && argc >= 3)
+  {
+    printf("version=%d\n", custom::SevenZArchiveVersion(argv[2]));
+    return 0;
+  }
+
   // 按用户注册右键菜单（测试用）
   if (wcscmp(argv[1], L"--shell-state") == 0)
   {
@@ -203,7 +239,7 @@ int wmain(int argc, wchar_t **argv)
       ::SetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", L"1");
     const int r = CustomHook_TryOpenImage(argv[2], argv[3], nullptr);  // 故意不传密码
     if (viaHookLaunch)
-      ::Sleep(4000);   // 给 Hook 里的自动填密码线程留时间
+      ::Sleep(9000);   // 给 Hook 里的后台线程留时间（两步走要 ~5s 再关整包窗口）
     printf("hook returned %d (%s)\n", r, r == 1 ? "handled" : "fallback to 7-Zip");
     return r == 1 ? 0 : 1;
   }

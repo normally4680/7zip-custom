@@ -611,33 +611,79 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   const bool launch = ::GetEnvironmentVariableW(L"Z7CUSTOM_PREVIEW_NOLAUNCH", nolaunch,
                                                 (DWORD)(sizeof(nolaunch) / sizeof(nolaunch[0]))) == 0;
 
-  // 首选：Honeyview 能直接解析压缩包（archive|inner），完全不需要解压，
-  // 大包也不会卡 UI。加密包由 Honeyview 自己弹密码框；如果密码库/CFolderLink
-  // 已经有密码，后台会自动填入，用户不用再输一遍。
+  // 首选：Honeyview 原生打开，完全不解压。调用方式按格式/状态分流
+  //（能力均为 PrintWindow 实测，详见 Custom/README.md）：
+  //   zip/tar        → 竖线 "archive|inner"，加密 zip 自动填验证过的密码
+  //   7z 未加密 ≤0.3 → 竖线（Bandizip 压的包都是 0.3）
+  //   7z 未加密 0.4  → 整包打开后补竖线（26.04 写 0.4，竖线快开只认 ≤0.3）
+  //   7z 加密        → 整包打开 + 自动填密码（竖线不支持 7z 解密），
+  //                    显示的是第一张图，用户在 Honeyview 里翻页
   if (launch)
   {
     const std::wstring hv = custom::FindHoneyview();
     if (!hv.empty())
     {
+      const wchar_t *dot = ::wcsrchr(archivePath, L'.');
+      const bool is7z = dot && ::lstrcmpiW(dot, L".7z") == 0;
+
       bool encrypted = false;
       const std::wstring dll = ModuleDir() + L"7z.dll";
       const bool known = custom::ArchiveIsEncrypted(dll.c_str(), archivePath, encrypted);
       const std::wstring inner = custom::NormalizeInnerPath(archivePath, itemRelPath);
       if (!inner.empty() && custom::IsSafeInnerPath(inner))
       {
-        // 确定未加密就不取密码；加密（或判断不了）时先验出可用的密码再启动，
-        // 拿未验证的库密码自动填框只会让 Honeyview 填进错误密码。
-        std::wstring autofill;
-        if (!known || encrypted)
-          autofill = ResolveVerifiedPassword(dll, archivePath, inner, pwd,
-                                             known && encrypted, true);
-        if (custom::LaunchHoneyviewArchive(hv, archivePath, inner, autofill))
+        bool ok = false;
+        std::wstring detail = L"honeyview: " + inner;
+
+        if (is7z && known && encrypted)
         {
-          std::wstring detail = L"honeyview: " + inner;
-          if (!autofill.empty())
-            detail += L" (autofill)";
-          else if (known && encrypted)
-            detail += L" (prompt)";
+          // 竖线不支持 7z 解密：整包打开，密码先验证再自动填；
+          // 用户取消密码框时带空密码整包打开，Honeyview 自己问
+          const std::wstring pwd2 = ResolveVerifiedPassword(dll, archivePath, inner,
+                                                            pwd, true, true);
+          ok = custom::LaunchHoneyviewWholeArchive(hv, archivePath, pwd2);
+          detail = std::wstring(L"honeyview whole: ") + archivePath;
+          detail += pwd2.empty() ? L" (prompt)" : L" (autofill)";
+        }
+        else if (is7z && !known)
+        {
+          // 加密状态判断不了：整包打开不带密码，Honeyview 需要时会自己问
+          ok = custom::LaunchHoneyviewWholeArchive(hv, archivePath);
+          detail = std::wstring(L"honeyview whole: ") + archivePath + L" (unknown state)";
+        }
+        else if (is7z)
+        {
+          const int ver = custom::SevenZArchiveVersion(archivePath);
+          if (ver >= 0 && ver <= 3)
+          {
+            ok = custom::LaunchHoneyviewArchive(hv, archivePath, inner);
+          }
+          else
+          {
+            ok = custom::LaunchHoneyviewWholeThenPipe(hv, archivePath, inner);
+            detail += L" (whole-then-pipe)";
+          }
+        }
+        else
+        {
+          // zip/tar/rar 等：竖线。加密（或判断不了）时先验出可用的密码再启动，
+          // 拿未验证的库密码自动填框只会让 Honeyview 填进错误密码。
+          std::wstring autofill;
+          if (!known || encrypted)
+            autofill = ResolveVerifiedPassword(dll, archivePath, inner, pwd,
+                                               known && encrypted, true);
+          if (custom::LaunchHoneyviewArchive(hv, archivePath, inner, autofill))
+          {
+            if (!autofill.empty())
+              detail += L" (autofill)";
+            else if (known && encrypted)
+              detail += L" (prompt)";
+            ok = true;
+          }
+        }
+
+        if (ok)
+        {
           DebugLog(L"TryOpenImage.native", detail.c_str());
           return 1;
         }
