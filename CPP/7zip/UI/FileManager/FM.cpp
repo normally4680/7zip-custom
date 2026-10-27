@@ -312,23 +312,31 @@ static BOOL InitInstance(int nCmdShow)
     centerOnStart = st.CenterOnStart;
     if (centerOnStart)
     {
-      targetRect.right = targetRect.left + RECT_SIZE_X(info.rect);
-      targetRect.bottom = targetRect.top + RECT_SIZE_Y(info.rect);
-      if (!info.maximized)
+      // Size is always taken from the saved rect and must survive the move:
+      // compute it before touching left/top, then rebuild right/bottom.
+      // (A degenerate saved size - e.g. poisoned by an old bug - is clamped.)
+      int w = RECT_SIZE_X(info.rect);
+      int h = RECT_SIZE_Y(info.rect);
+      if (w < 400) w = 400;
+      if (h < 300) h = 300;
+
+      POINT pt = {};
+      ::GetCursorPos(&pt);   // multi-monitor: follow the screen with the mouse
+      const HMONITOR mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+      MONITORINFO mi;
+      mi.cbSize = sizeof(mi);
+      if (::GetMonitorInfoW(mon, &mi))
       {
-        POINT pt = {};
-        ::GetCursorPos(&pt);   // multi-monitor: follow the screen with the mouse
-        const HMONITOR mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi;
-        mi.cbSize = sizeof(mi);
-        if (::GetMonitorInfoW(mon, &mi))
-        {
-          targetRect.left = mi.rcWork.left
-              + (RECT_SIZE_X(mi.rcWork) - RECT_SIZE_X(targetRect)) / 2;
-          targetRect.top = mi.rcWork.top
-              + (RECT_SIZE_Y(mi.rcWork) - RECT_SIZE_Y(targetRect)) / 2;
-        }
+        targetRect.left = mi.rcWork.left + (RECT_SIZE_X(mi.rcWork) - w) / 2;
+        targetRect.top = mi.rcWork.top + (RECT_SIZE_Y(mi.rcWork) - h) / 2;
       }
+      else
+      {
+        targetRect.left = info.rect.left;
+        targetRect.top = info.rect.top;
+      }
+      targetRect.right = targetRect.left + w;
+      targetRect.bottom = targetRect.top + h;
     }
     x = targetRect.left;
     y = targetRect.top;
