@@ -814,7 +814,8 @@ enum
   kCmdVaultDiag    = 0x7A04,
   kCmdShellRegister   = 0x7A05,
   kCmdShellUnregister = 0x7A06,
-  kCmdOpenAppDir      = 0x7A07
+  kCmdOpenAppDir      = 0x7A07,
+  kCmdToggleCenter    = 0x7A08
 };
 
 const UINT_PTR kSubclassId = 0x7A99;
@@ -841,6 +842,49 @@ bool MenuHasExtras(HMENU main)
       return true;
   }
   return false;
+}
+
+// 启动时窗口居中开关的存储：HKCU\Software\7-Zip\FM\CenterOnStart
+// （与 FM.cpp / CFmSettings.CenterOnStart 同一位置，默认开启）
+bool ReadCenterOnStart()
+{
+  HKEY key;
+  if (::RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\7-Zip\\FM", 0, KEY_READ, &key)
+      != ERROR_SUCCESS)
+    return true;
+  DWORD v = 0, sz = sizeof(v), type = 0;
+  const LONG r = ::RegQueryValueExW(key, L"CenterOnStart", nullptr, &type,
+                                    reinterpret_cast<LPBYTE>(&v), &sz);
+  ::RegCloseKey(key);
+  if (r != ERROR_SUCCESS || type != REG_DWORD || sz != sizeof(v))
+    return true;
+  return v != 0;
+}
+
+void WriteCenterOnStart(bool on)
+{
+  HKEY key;
+  if (::RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\7-Zip\\FM", 0, nullptr,
+                        REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &key, nullptr)
+      != ERROR_SUCCESS)
+    return;
+  DWORD v = on ? 1 : 0;
+  ::RegSetValueExW(key, L"CenterOnStart", 0, REG_DWORD,
+                   reinterpret_cast<const BYTE *>(&v), sizeof(v));
+  ::RegCloseKey(key);
+}
+
+// 让菜单勾选状态和注册表一致（菜单项可能挂在任意子菜单里）
+void SyncCenterMenuCheck(HMENU main, bool on)
+{
+  const int count = ::GetMenuItemCount(main);
+  for (int i = 0; i < count; ++i)
+  {
+    HMENU sub = ::GetSubMenu(main, i);
+    if (sub && ::GetMenuState(sub, kCmdToggleCenter, MF_BYCOMMAND) != (UINT)-1)
+      ::CheckMenuItem(sub, kCmdToggleCenter,
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+  }
 }
 
 void ShowVaultUi(HWND hwnd, int mode)
@@ -1007,6 +1051,15 @@ void OnVaultCommand(HWND hwnd, unsigned cmd)
     case kCmdOpenAppDir:
       ::ShellExecuteW(hwnd, L"open", ModuleDir().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
       break;
+    case kCmdToggleCenter:
+    {
+      const bool now = !ReadCenterOnStart();
+      WriteCenterOnStart(now);
+      if (HMENU main = ::GetMenu(hwnd))
+        SyncCenterMenuCheck(main, now);
+      DebugLog(L"CenterOnStart", now ? L"on" : L"off");
+      break;
+    }
   }
 }
 
@@ -1016,7 +1069,7 @@ LRESULT CALLBACK MainWndSubclass(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
   if (msg == WM_COMMAND)
   {
     const unsigned cmd = LOWORD(wp);
-    if (cmd >= kCmdVaultManager && cmd <= kCmdOpenAppDir)
+    if (cmd >= kCmdVaultManager && cmd <= kCmdToggleCenter)
     {
       OnVaultCommand(hwnd, cmd);
       return 0;
@@ -1080,6 +1133,9 @@ extern "C" int CUSTOM_HOOK_API CustomHook_AttachMainMenu(void *hWnd)
     ::AppendMenuW(sub, MF_STRING, kCmdShellRegister,
                   L"注册右键菜单（当前用户）(&R)");
     ::AppendMenuW(sub, MF_STRING, kCmdShellUnregister, L"取消右键菜单(&U)");
+    ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
+    ::AppendMenuW(sub, MF_STRING | (ReadCenterOnStart() ? MF_CHECKED : 0),
+                  kCmdToggleCenter, L"启动时窗口居中（下次启动生效）(&C)");
     ::AppendMenuW(sub, MF_SEPARATOR, 0, nullptr);
     ::AppendMenuW(sub, MF_STRING, kCmdOpenAppDir, L"打开程序目录(&O)");
 

@@ -1,7 +1,7 @@
 // #define g1xs 60
 // #include "MemDialogRes.h"
 
-#define save_y 158
+#define save_y 144
 #define spin_y (save_y + 12)
 #define spin_x_size 50
 
@@ -17,8 +17,6 @@ BEGIN
   MY_CONTROL_CHECKBOX ( "Show system &menu",     IDX_SETTINGS_SHOW_SYSTEM_MENU,     m, 100, xc)
 
   MY_CONTROL_CHECKBOX ( "Use &large memory pages", IDX_SETTINGS_LARGE_PAGES,        m, 122, xc)
-
-  MY_CONTROL_CHECKBOX ( "Center window on the screen at &startup", IDX_SETTINGS_CENTER_ON_START, m, 136, xc)
 
   LTEXT "Maximum amount of RAM memory usage allowed to unpack archives:",
         IDT_MEM_USAGE_EXTRACT, m, save_y, xc, 8
