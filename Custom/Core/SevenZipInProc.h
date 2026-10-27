@@ -32,6 +32,16 @@ bool ExtractImagesInProcess(const wchar_t *dllPath,
 bool ArchiveIsEncrypted(const wchar_t *dllPath, const std::wstring &archivePath,
                         bool &encrypted);
 
+// 用 password 试解归档里的一个条目，验证密码是否真的可用：
+// 优先验证 innerPath 指定的条目，否则挑最小的文件条目（解得最快）。
+//   verified : true = 这个密码能解出数据
+// 返回 false = 判断不了（7z.dll 不可用 / 打不开归档 / 没有可验证条目）。
+// 与 ArchiveIsEncrypted 搭配用：头加密的包在"开归档"一步就能验出密码对错，
+// 只加密数据的包要靠试解条目。
+bool ArchiveTryPassword(const wchar_t *dllPath, const std::wstring &archivePath,
+                        const std::wstring &innerPath, const std::wstring &password,
+                        bool &verified);
+
 } // namespace custom
 
 #endif

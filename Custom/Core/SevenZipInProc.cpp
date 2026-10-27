@@ -369,6 +369,81 @@ Z7_COM7F_IMF(CExtractCallback::CryptoGetTextPassword2(Int32 *passwordIsDefined, 
   return CryptoGetTextPassword(password);
 }
 
+// ------------------------------------------------------------ 密码验证
+
+// 只吃不吐的输出流：验证密码时用，解出的数据直接丢掉。
+// 解码器照常解密、照常算 CRC，密码错/数据坏会在 SetOperationResult 里报出来。
+class CVoidOutStream Z7_final:
+  public ISequentialOutStream,
+  public CMyUnknownImp
+{
+public:
+  Z7_COM_UNKNOWN_IMP_0
+  Z7_IFACE_COM7_IMP(ISequentialOutStream)
+};
+
+Z7_COM7F_IMF(CVoidOutStream::Write(const void *, UInt32 size, UInt32 *processed))
+{
+  if (processed)
+    *processed = size;
+  return S_OK;
+}
+
+class CVerifyCallback Z7_final:
+  public IArchiveExtractCallback,
+  public ICryptoGetTextPassword,
+  public ICryptoGetTextPassword2,
+  public CMyUnknownImp
+{
+public:
+  Z7_COM_UNKNOWN_IMP_3(IArchiveExtractCallback, ICryptoGetTextPassword, ICryptoGetTextPassword2)
+  Z7_IFACE_COM7_IMP(IProgress)
+  Z7_IFACE_COM7_IMP(IArchiveExtractCallback)
+  Z7_IFACE_COM7_IMP(ICryptoGetTextPassword)
+  Z7_IFACE_COM7_IMP(ICryptoGetTextPassword2)
+
+public:
+  std::wstring Password;
+  bool SawError = false;
+};
+
+Z7_COM7F_IMF(CVerifyCallback::SetTotal(UInt64)) { return S_OK; }
+Z7_COM7F_IMF(CVerifyCallback::SetCompleted(const UInt64 *)) { return S_OK; }
+Z7_COM7F_IMF(CVerifyCallback::PrepareOperation(Int32)) { return S_OK; }
+
+Z7_COM7F_IMF(CVerifyCallback::GetStream(UInt32, ISequentialOutStream **outStream,
+                                        Int32 askExtractMode))
+{
+  *outStream = nullptr;
+  if (askExtractMode != NArchive::NExtract::NAskMode::kExtract)
+    return S_OK;
+  CMyComPtr<ISequentialOutStream> s = (ISequentialOutStream *)(new CVoidOutStream);
+  *outStream = s.Detach();
+  return S_OK;
+}
+
+Z7_COM7F_IMF(CVerifyCallback::SetOperationResult(Int32 opRes))
+{
+  if (opRes != NArchive::NExtract::NOperationResult::kOK)
+    SawError = true;
+  return S_OK;
+}
+
+Z7_COM7F_IMF(CVerifyCallback::CryptoGetTextPassword(BSTR *password))
+{
+  if (!password)
+    return E_INVALIDARG;
+  *password = ::SysAllocString(Password.c_str());
+  return *password ? S_OK : E_OUTOFMEMORY;
+}
+
+Z7_COM7F_IMF(CVerifyCallback::CryptoGetTextPassword2(Int32 *passwordIsDefined, BSTR *password))
+{
+  if (passwordIsDefined)
+    *passwordIsDefined = 1;
+  return CryptoGetTextPassword(password);
+}
+
 // 尝试用某个 handler 打开
 HRESULT TryOpenWithFormat(const SevenZipApi &api, UInt32 formatIndex,
                           const std::wstring &archivePath, const std::wstring &password,
@@ -696,6 +771,113 @@ bool ArchiveIsEncrypted(const wchar_t *dllPath, const std::wstring &archivePath,
       break;
     }
   }
+  return true;
+}
+
+bool ArchiveTryPassword(const wchar_t *dllPath,
+                        const std::wstring &archivePath,
+                        const std::wstring &innerPath,
+                        const std::wstring &password,
+                        bool &verified)
+{
+  verified = false;
+  const SevenZipApi api = LoadApi(dllPath);
+  if (!api.ok)
+    return false;
+
+  UInt32 numFormats = 0;
+  if (api.getNumberOfFormats(&numFormats) != S_OK || numFormats == 0)
+    return false;
+
+  std::vector<FormatCandidate> order;
+  BuildFormatOrder(api, numFormats, archivePath, order);
+
+  CMyComPtr<IInArchive> archive;
+  CMyComPtr<IInStream> stream;
+  bool opened = false;
+  for (const FormatCandidate &c : order)
+  {
+    bool asked = false;
+    if (TryOpenWithFormat(api, c.index, archivePath, password, &asked, archive, stream) == S_OK)
+    {
+      opened = true;
+      break;
+    }
+    archive.Release();
+    stream.Release();
+    // 扩展名对上了、开归档时向我们要过密码却失败了：头加密 + 密码错。
+    if (c.nameMatch && asked)
+      return true;   // verified = false
+  }
+  if (!opened)
+    return false;
+
+  // 头没加密的包用什么密码都开得开，密码对不对要看解数据：挑一个条目试解。
+  UInt32 numItems = 0;
+  if (archive->GetNumberOfItems(&numItems) != S_OK || numItems == 0)
+    return false;
+
+  // 验证条目：优先用目标文件本身，否则取最小的文件条目（解得最快）。
+  std::wstring want = innerPath;
+  for (auto &ch : want)
+    if (ch == L'/')
+      ch = L'\\';
+
+  int target = -1;
+  int fallback = -1;
+  UInt64 fallbackSize = 0;
+  for (UInt32 i = 0; i < numItems && target < 0; ++i)
+  {
+    PROPVARIANT vPath, vDir, vSize;
+    PropVariantInit(&vPath);
+    PropVariantInit(&vDir);
+    PropVariantInit(&vSize);
+    std::wstring rel;
+    if (archive->GetProperty(i, kpidPath, &vPath) == S_OK)
+      rel = PropToString(vPath);
+    bool isDir = false;
+    if (archive->GetProperty(i, kpidIsDir, &vDir) == S_OK && vDir.vt == VT_BOOL)
+      isDir = (vDir.boolVal != VARIANT_FALSE);
+    UInt64 sz = 0;
+    if (archive->GetProperty(i, kpidSize, &vSize) == S_OK && vSize.vt == VT_UI8)
+      sz = vSize.uhVal.QuadPart;
+    PropVariantClear(&vPath);
+    PropVariantClear(&vDir);
+    PropVariantClear(&vSize);
+
+    if (isDir || rel.empty())
+      continue;
+
+    if (!want.empty())
+    {
+      std::wstring norm = rel;
+      for (auto &ch : norm)
+        if (ch == L'/')
+          ch = L'\\';
+      if (_wcsicmp(norm.c_str(), want.c_str()) == 0)
+      {
+        target = (int)i;
+        break;
+      }
+    }
+
+    if (fallback < 0 || sz < fallbackSize)
+    {
+      fallback = (int)i;
+      fallbackSize = sz;
+    }
+  }
+
+  const int idx = (target >= 0) ? target : fallback;
+  if (idx < 0)
+    return false;
+
+  CVerifyCallback *cbSpec = new CVerifyCallback;
+  cbSpec->Password = password;
+  CMyComPtr<IArchiveExtractCallback> cb = cbSpec;
+  UInt32 index = (UInt32)idx;
+  const HRESULT res = archive->Extract(&index, 1, false, cb);
+  verified = (res == S_OK && !cbSpec->SawError);
   return true;
 }
 

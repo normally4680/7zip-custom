@@ -97,6 +97,16 @@ int wmain(int argc, wchar_t **argv)
     return known ? 0 : 1;
   }
 
+  // 验证密码能不能真的解出条目：退出码 0=验证通过 2=密码不可用 1=判断不了
+  // 用法：PreviewTest.exe --verify <archive> <inner-path> <password>
+  if (wcscmp(argv[1], L"--verify") == 0 && argc >= 5)
+  {
+    bool ok = false;
+    const bool known = custom::ArchiveTryPassword(L"7z.dll", argv[2], argv[3], argv[4], ok);
+    printf("known=%d verified=%d\n", (int)known, (int)ok);
+    return !known ? 1 : (ok ? 0 : 2);
+  }
+
   // 直接走 Honeyview 原生路径（不解压）；可选密码会后台自动填入密码框
   if (wcscmp(argv[1], L"--native") == 0 && argc >= 4)
   {
