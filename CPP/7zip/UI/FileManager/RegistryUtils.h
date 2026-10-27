@@ -29,6 +29,9 @@ struct CFmSettings
 
   bool ShowSystemMenu;
 
+  // 7zip-custom: center window on the screen at startup (don't reuse last position)
+  bool CenterOnStart;
+
   void Save() const;
   void Load();
 };
