@@ -113,18 +113,13 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 
 1. 判断扩展名是不是图片（jpg/png/gif/webp/tiff/avif/heic/psd…），不是就返回 0；
    归档内路径里带 `..`、盘符、冒号的一律拒绝（防止恶意归档写到临时目录之外）
-2. **首选 Honeyview 原生模式（完全不解压）—— 仅限 zip/tar**
+2. **首选 Honeyview 原生模式（完全不解压）**
    - 通过 `config.ini` 的 `[viewer] path`、注册表 `Honeyview\ProgramPath`、
      App Paths、常见安装目录找到 Honeyview（用户显式配置了别的看图程序时尊重配置）
-   - **格式白名单 `HoneyviewSupportsVirtualPath`：只有 `.zip` / `.tar` 走这条路**。
-     5.53 用 PrintWindow 截窗体实测：zip/tar 正常；**7z 连不加密的都只显示
-     "占位图"（图挂了的样子）**，cbz 同样不行，rar 未验证。这不是加密或密码
-     的问题——是 Honeyview 的 `archive|inner` 接口解析不了这些格式。其它格式
-     一律直接走第 3 步解压回退，别让用户看到占位图
    - 用 7z.dll 的 `ArchiveIsEncrypted` 快速判断归档是否加密（只看头部和条目属性）
    - 未加密 → `Honeyview.exe "<归档>|<归档内路径>"`。Honeyview 自己解析压缩包、
      按需解码；7zFM 的 UI 线程只等进程创建（约百毫秒），大包不会假死
-   - 加密 zip → **仍然走原生模式**：先由 `ResolveVerifiedPassword` 验出可用密码
+   - 加密包 → **仍然走原生模式**：先由 `ResolveVerifiedPassword` 验出可用密码
      （候选依次为 `CFolderLink`/名字匹配的库密码 → 会话缓存 → 密码库全部条目，
      每个候选用 `ArchiveTryPassword` 在进程内试解一个条目验证，只加密数据、
      不加密文件名的包就靠这一步兜住——打开时 7-Zip 不问密码，名字匹配又可能
@@ -141,9 +136,8 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
 
 **Honeyview 虚拟路径格式**：`archive.7z|风景\1.jpg`。这是从 Bandizip 启动
 Honeyview 时的实际命令行抓到的（WMI 查 `Win32_Process.CommandLine`）。
-但注意：**这个接口只有 zip/tar 真的能用**（7z/cbz 显示占位图，见上），
-当初 381MB / 2000 张的实测包都是 zip——7z 的"无缝"其实从来没通过，
-直到 2026-10-27 做加密对照实验才暴露出来。
+实测：381MB / 50 张的包点第 25 张约 0.5s；2000 张的包点第 1000 张约 1.2s，
+全程没有临时文件；而解压 2000 张要 1.6s，且这 1.6s 里 7zFM 的 UI 线程是被占住的。
 
 失败分两类（这是调试时最容易被误导的地方）：
 
