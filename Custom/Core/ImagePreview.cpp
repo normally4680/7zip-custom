@@ -888,7 +888,133 @@ DWORD WINAPI AutofillThread(LPVOID param)
   return 0;
 }
 
+// 启动 Honeyview 并返回新进程 pid。argQuoted 是带引号的单个参数
+//（"archive" 或 "archive|inner"），工作目录设为归档所在目录。
+bool StartHoneyview(const std::wstring &honeyviewExe, const std::wstring &argQuoted,
+                    const std::wstring &archivePath, DWORD &pidOut)
+{
+  pidOut = 0;
+  std::wstring cmd = L"\"" + honeyviewExe + L"\" " + argQuoted;
+  const size_t slash = archivePath.find_last_of(L"\\/");
+  const std::wstring workDir = (slash == std::wstring::npos)
+      ? std::wstring() : archivePath.substr(0, slash);
+
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi = {};
+  if (!::CreateProcessW(honeyviewExe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0,
+                        nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
+    return false;
+  pidOut = pi.dwProcessId;
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+  return true;
+}
+
+void StartAutofill(DWORD pid, const std::wstring &password)
+{
+  AutofillCtx *ctx = new AutofillCtx;
+  ctx->pid = pid;
+  ctx->password = password;
+  HANDLE th = ::CreateThread(nullptr, 0, AutofillThread, ctx, 0, nullptr);
+  if (th)
+    ::CloseHandle(th);
+  else
+  {
+    ::SecureZeroMemory(&ctx->password[0], ctx->password.size() * sizeof(wchar_t));
+    delete ctx;
+  }
+}
+
+// pid 的可见顶层窗口里是否有标题含 sub 的（用来确认竖线窗口真开出来了）
+bool HasWindowTitled(DWORD pid, const std::wstring &sub)
+{
+  struct Ctx { DWORD pid; const std::wstring *sub; bool hit; } c = { pid, &sub, false };
+  ::EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+    Ctx *x = reinterpret_cast<Ctx *>(lp);
+    DWORD p = 0;
+    ::GetWindowThreadProcessId(h, &p);
+    if (p != x->pid || !::IsWindowVisible(h))
+      return TRUE;
+    wchar_t title[512] = {};
+    ::GetWindowTextW(h, title, 512);
+    if (x->sub->empty() || wcsstr(title, x->sub->c_str()) != nullptr)
+    {
+      x->hit = true;
+      return FALSE;
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&c));
+  return c.hit;
+}
+
+struct TwoStepCtx
+{
+  std::wstring exe;
+  std::wstring archive;
+  std::wstring inner;   // 反斜杠形式
+};
+
+// 两步走线程：整包打开 → 等解析进浏览历史 → 竖线切到目标图 → 关掉整包窗口。
+// 背景：Honeyview 竖线快开解析 7z 时只认格式版本 ≤0.3（26.04 写 0.4），
+// 但整包打开不受限；整包打开过一次后竖线就能用。
+DWORD WINAPI WholeThenPipeThread(LPVOID param)
+{
+  TwoStepCtx *c = reinterpret_cast<TwoStepCtx *>(param);
+  DWORD pid1 = 0;
+  if (!StartHoneyview(c->exe, L"\"" + c->archive + L"\"", c->archive, pid1))
+  {
+    delete c;
+    return 0;
+  }
+  ::Sleep(2500);   // 给 Honeyview 时间解析归档
+  DWORD pid2 = 0;
+  if (!StartHoneyview(c->exe, L"\"" + c->archive + L"|" + c->inner + L"\"", c->archive, pid2))
+  {
+    delete c;      // 竖线没发出去，至少整包窗口还开着
+    return 0;
+  }
+  ::Sleep(2000);
+  // 竖线窗口标题里含目标文件名；确认它真开出来了才关整包窗口
+  const size_t slash = c->inner.find_last_of(L'\\');
+  const std::wstring name = (slash == std::wstring::npos) ? c->inner : c->inner.substr(slash + 1);
+  if (pid1 && pid2 && pid1 != pid2 && HasWindowTitled(pid2, name))
+  {
+    HANDLE h = ::OpenProcess(PROCESS_TERMINATE, FALSE, pid1);
+    if (h)
+    {
+      ::TerminateProcess(h, 0);
+      ::CloseHandle(h);
+    }
+  }
+  delete c;
+  return 0;
+}
+
 } // namespace
+
+int SevenZArchiveVersion(const std::wstring &archivePath)
+{
+  HANDLE h = ::CreateFileW(archivePath.c_str(), GENERIC_READ,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE)
+    return -1;
+  unsigned char hdr[8] = {};
+  DWORD got = 0;
+  const BOOL ok = ::ReadFile(h, hdr, sizeof(hdr), &got, nullptr);
+  ::CloseHandle(h);
+  if (!ok || got != sizeof(hdr))
+    return -1;
+  // "7z\xBC\xAF\x27\x1C" + 版本主/次字节；次字节即 0.3/0.4 的 3/4
+  static const unsigned char kSig[6] = { 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C };
+  for (int i = 0; i < 6; ++i)
+    if (hdr[i] != kSig[i])
+      return -1;
+  if (hdr[6] != 0x00)
+    return -1;
+  return (int)hdr[7];
+}
 
 bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
                             const std::wstring &archivePath,
@@ -906,36 +1032,58 @@ bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
     return false;
 
   // Honeyview 的虚拟路径格式："<归档>|<归档内路径>"（Bandizip 也是这样调的）
-  std::wstring cmd = L"\"" + honeyviewExe + L"\" \"" + archivePath + L"|" + inner + L"\"";
-  const size_t slash = archivePath.find_last_of(L"\\/");
-  const std::wstring workDir = (slash == std::wstring::npos)
-      ? std::wstring() : archivePath.substr(0, slash);
-
-  STARTUPINFOW si = {};
-  si.cb = sizeof(si);
-  PROCESS_INFORMATION pi = {};
-  if (!::CreateProcessW(honeyviewExe.c_str(), &cmd[0], nullptr, nullptr, FALSE, 0,
-                        nullptr, workDir.empty() ? nullptr : workDir.c_str(), &si, &pi))
+  DWORD pid = 0;
+  if (!StartHoneyview(honeyviewExe,
+                      L"\"" + archivePath + L"|" + inner + L"\"",
+                      archivePath, pid))
     return false;
 
-  const DWORD pid = pi.dwProcessId;
-  ::CloseHandle(pi.hThread);
-  ::CloseHandle(pi.hProcess);
+  if (!password.empty())
+    StartAutofill(pid, password);
+  return true;
+}
+
+bool LaunchHoneyviewWholeArchive(const std::wstring &honeyviewExe,
+                                 const std::wstring &archivePath,
+                                 const std::wstring &password)
+{
+  if (honeyviewExe.empty() || archivePath.empty())
+    return false;
+
+  DWORD pid = 0;
+  if (!StartHoneyview(honeyviewExe, L"\"" + archivePath + L"\"", archivePath, pid))
+    return false;
 
   if (!password.empty())
+    StartAutofill(pid, password);
+  return true;
+}
+
+bool LaunchHoneyviewWholeThenPipe(const std::wstring &honeyviewExe,
+                                  const std::wstring &archivePath,
+                                  const std::wstring &innerRelPath)
+{
+  if (honeyviewExe.empty() || archivePath.empty() || innerRelPath.empty())
+    return false;
+
+  std::wstring inner = innerRelPath;
+  for (auto &c : inner)
+    if (c == L'/')
+      c = L'\\';
+  if (!IsSafeInnerPath(inner))
+    return false;
+
+  TwoStepCtx *ctx = new TwoStepCtx;
+  ctx->exe = honeyviewExe;
+  ctx->archive = archivePath;
+  ctx->inner = inner;
+  HANDLE th = ::CreateThread(nullptr, 0, WholeThenPipeThread, ctx, 0, nullptr);
+  if (!th)
   {
-    AutofillCtx *ctx = new AutofillCtx;
-    ctx->pid = pid;
-    ctx->password = password;
-    HANDLE th = ::CreateThread(nullptr, 0, AutofillThread, ctx, 0, nullptr);
-    if (th)
-      ::CloseHandle(th);
-    else
-    {
-      ::SecureZeroMemory(&ctx->password[0], ctx->password.size() * sizeof(wchar_t));
-      delete ctx;
-    }
+    delete ctx;
+    return false;
   }
+  ::CloseHandle(th);
   return true;
 }
 

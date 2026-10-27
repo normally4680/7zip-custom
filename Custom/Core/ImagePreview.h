@@ -48,12 +48,32 @@ std::wstring NormalizeInnerPath(const std::wstring &archivePath,
 // 找 Honeyview（它能直接解析压缩包，不需要解压）。
 std::wstring FindHoneyview();
 
+// 读 7z 签名头里的格式版本（第 8 字节）：
+//   3 / 4 = 7z 格式版本 0.3 / 0.4（26.04 写 0.4，Honeyview 竖线快开只认 ≤0.3）
+//   -1    = 不是 7z 或读不到
+int SevenZArchiveVersion(const std::wstring &archivePath);
+
 // 用 Honeyview 直接打开归档内某张图，路径格式为 "archive|inner"。
 // password 非空时，后台等 Honeyview 的密码框出现并自动填入（加密包用）。
 bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
                             const std::wstring &archivePath,
                             const std::wstring &innerRelPath,
                             const std::wstring &password = std::wstring());
+
+// 整包打开（不带内路径）：Honeyview 自己浏览归档、需要密码时弹框。
+// password 非空时同样自动填入。7z 加密包只有这条路能看（竖线不支持 7z 解密）。
+// 代价：显示的是 Honeyview 排序的第一张图，不是用户点的那张。
+bool LaunchHoneyviewWholeArchive(const std::wstring &honeyviewExe,
+                                 const std::wstring &archivePath,
+                                 const std::wstring &password = std::wstring());
+
+// 两步走：先整包打开（让 Honeyview 解析归档并进它的浏览历史），
+// 约 2.5s 后再补一发 "archive|inner" 切到用户点的那张图，成功后关掉
+// 整包那个窗口。用于"未加密但格式版本 0.4"的 7z：竖线单独打不开，
+// 整包+竖线两步可以精确定位。全程后台线程，不占 UI。
+bool LaunchHoneyviewWholeThenPipe(const std::wstring &honeyviewExe,
+                                  const std::wstring &archivePath,
+                                  const std::wstring &innerRelPath);
 
 // innerRelPath : 归档内相对路径，用 '/' 或 '\' 分隔都行
 // password     : 可以为空；空的时候用空密码试，失败就返回 false 让 7-Zip 走原流程
