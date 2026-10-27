@@ -299,13 +299,41 @@ static BOOL InitInstance(int nCmdShow)
   bool windowPosIsRead;
   info.Read(windowPosIsRead, g_PanelsInfoDefined);
 
+  // 7zip-custom: when "center window at startup" is enabled, ignore the saved
+  // position (keep the saved size) and center the window on the work area of
+  // the monitor that contains the mouse cursor. The normal position is also
+  // centered, so restoring from maximized lands in the middle of the screen.
+  RECT targetRect = info.rect;
+  bool centerOnStart = false;
   if (windowPosIsRead)
   {
-    x = info.rect.left;
-    y = info.rect.top;
-    
-    xSize = RECT_SIZE_X(info.rect);
-    ySize = RECT_SIZE_Y(info.rect);
+    CFmSettings st;
+    st.Load();
+    centerOnStart = st.CenterOnStart;
+    if (centerOnStart)
+    {
+      targetRect.right = targetRect.left + RECT_SIZE_X(info.rect);
+      targetRect.bottom = targetRect.top + RECT_SIZE_Y(info.rect);
+      if (!info.maximized)
+      {
+        POINT pt = {};
+        ::GetCursorPos(&pt);   // multi-monitor: follow the screen with the mouse
+        const HMONITOR mon = ::MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi;
+        mi.cbSize = sizeof(mi);
+        if (::GetMonitorInfoW(mon, &mi))
+        {
+          targetRect.left = mi.rcWork.left
+              + (RECT_SIZE_X(mi.rcWork) - RECT_SIZE_X(targetRect)) / 2;
+          targetRect.top = mi.rcWork.top
+              + (RECT_SIZE_Y(mi.rcWork) - RECT_SIZE_Y(targetRect)) / 2;
+        }
+      }
+    }
+    x = targetRect.left;
+    y = targetRect.top;
+    xSize = RECT_SIZE_X(targetRect);
+    ySize = RECT_SIZE_Y(targetRect);
   }
 
 
@@ -417,7 +445,7 @@ static BOOL InitInstance(int nCmdShow)
   if (wnd.GetPlacement(&placement))
   {
     if (windowPosIsRead)
-      placement.rcNormalPosition = info.rect;
+      placement.rcNormalPosition = centerOnStart ? targetRect : info.rect;
     placement.showCmd = (UINT)nCmdShow;
     wnd.SetPlacement(&placement);
   }
