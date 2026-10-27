@@ -37,6 +37,7 @@ static const UInt32 kLangIDs[] =
   IDX_SETTINGS_SINGLE_CLICK,
   IDX_SETTINGS_ALTERNATIVE_SELECTION,
   IDX_SETTINGS_LARGE_PAGES,
+  IDX_SETTINGS_CENTER_ON_START,
   IDT_MEM_USAGE_EXTRACT
   // , IDT_COMPRESS_MEMORY
 };
@@ -139,6 +140,7 @@ bool CSettingsPage::OnInit()
   // CheckButton(IDX_SETTINGS_UNDERLINE, st.Underline);
 
   CheckButton(IDX_SETTINGS_SHOW_SYSTEM_MENU, st.ShowSystemMenu);
+  CheckButton(IDX_SETTINGS_CENTER_ON_START, st.CenterOnStart);
   
   if (IsLargePageSupported())
     CheckButton(IDX_SETTINGS_LARGE_PAGES, ReadLockMemoryEnable());
@@ -283,6 +285,7 @@ LONG CSettingsPage::OnApply()
     // st.Underline = IsButtonCheckedBool(IDX_SETTINGS_UNDERLINE);
     
     st.ShowSystemMenu = IsButtonCheckedBool(IDX_SETTINGS_SHOW_SYSTEM_MENU);
+    st.CenterOnStart = IsButtonCheckedBool(IDX_SETTINGS_CENTER_ON_START);
 
     st.Save();
     _wasChanged = false;
@@ -426,6 +429,7 @@ bool CSettingsPage::OnButtonClicked(unsigned buttonID, HWND buttonHWND)
     */
     case IDX_SETTINGS_SHOW_DOTS:
     case IDX_SETTINGS_SHOW_SYSTEM_MENU:
+    case IDX_SETTINGS_CENTER_ON_START:
     case IDX_SETTINGS_SHOW_REAL_FILE_ICONS:
     case IDX_SETTINGS_FULL_ROW:
     case IDX_SETTINGS_SHOW_GRID:
