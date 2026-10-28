@@ -18,6 +18,27 @@ $Version = $Version -replace '[^\w\.\-]', '-'
 
 $files = @("7zFM.exe", "7zG.exe", "7z.exe", "7z.dll", "7-zip.dll", "7zVault.exe", "7zVaultUi.dll")
 
+# Guard against packaging stale binaries: if _out\x64 disagrees with the
+# freshly built copy in the target build directory, build-msvc.bat either
+# failed or was skipped while the exe was running (copy silently failed).
+$built = @{
+    "7zFM.exe"   = "CPP\7zip\Bundles\Fm\x64\7zFM.exe"
+    "7zG.exe"    = "CPP\7zip\UI\GUI\x64\7zG.exe"
+    "7z.exe"     = "CPP\7zip\UI\Console\x64\7z.exe"
+    "7z.dll"     = "CPP\7zip\Bundles\Format7zF\x64\7z.dll"
+    "7-zip.dll"  = "CPP\7zip\UI\Explorer\x64\7-zip.dll"
+}
+foreach ($f in $built.Keys) {
+    $srcOut = Join-Path $bin $f
+    $srcBuilt = Join-Path $repo $built[$f]
+    if (-not (Test-Path $srcBuilt) -or -not (Test-Path $srcOut)) { continue }
+    $hOut = (Get-FileHash $srcOut -Algorithm SHA256).Hash
+    $hBuilt = (Get-FileHash $srcBuilt -Algorithm SHA256).Hash
+    if ($hOut -ne $hBuilt) {
+        throw "_out\x64\$f is stale (differs from $($built[$f])). Close running 7zFM/7zG/7z and rerun build-msvc.bat."
+    }
+}
+
 Write-Host "== staging portable package ($Version)"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
@@ -25,7 +46,11 @@ New-Item -ItemType Directory -Path $stage | Out-Null
 foreach ($f in $files) {
     $src = Join-Path $bin $f
     if (-not (Test-Path $src)) { throw "missing build output: $src (run build-msvc.bat first)" }
-    Copy-Item $src (Join-Path $stage $f)
+    $dst = Join-Path $stage $f
+    Copy-Item $src $dst
+    $h1 = (Get-FileHash $src -Algorithm SHA256).Hash
+    $h2 = (Get-FileHash $dst -Algorithm SHA256).Hash
+    if ($h1 -ne $h2) { throw "staged file mismatch: $f" }
 }
 
 $static = @(
