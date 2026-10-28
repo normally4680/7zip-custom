@@ -265,6 +265,12 @@ public:
   UInt32 NumArchiveErrors;
   NExtract::NOverwriteMode::EEnum OverwriteMode;
 
+public:
+  // 7zip-custom: the panel sets this when extracting from an archive.
+  // That flow never calls BeforeOpen(), so _currentArchivePath would stay
+  // empty and the vault / custom password dialog would be skipped.
+  void SetCurrentArchivePath(const UString &path) { _currentArchivePath = path; }
+
 private:
   UString _currentArchivePath;
   UString _currentFilePath;

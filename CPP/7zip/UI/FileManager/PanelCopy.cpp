@@ -238,6 +238,13 @@ HRESULT CPanel::CopyTo(CCopyToOptions &options,
 
   extracter.ExtractCallbackSpec->StreamMode = options.streamMode;
 
+  // 7zip-custom: extracting from an archive panel doesn't call BeforeOpen(),
+  // so tell the callback which archive is being read (vault lookup + our
+  // password dialog use this path).
+  if (!_parentFolders.IsEmpty())
+    extracter.ExtractCallbackSpec->SetCurrentArchivePath(
+        fs2us(_parentFolders.Back().FilePath));
+
 
   if (indices.Size() == 1)
   {
