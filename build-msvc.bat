@@ -71,23 +71,41 @@ for %%T in (%LIST%) do (
 echo.
 if defined FAILED ( echo [FAIL] failed targets:%FAILED% & exit /b 1 )
 call :stage
+if errorlevel 1 exit /b 1
 echo [ALL DONE]
 exit /b 0
 
 REM ---- collect built binaries into _out\x64 for easy run / debug ----
+REM Every copy is checked: if the destination exe is running, "copy /y" fails
+REM and would leave a stale binary in _out while the build still reports OK.
 :stage
 set "OUT=%~dp0_out\x64"
 if not exist "%OUT%" mkdir "%OUT%"
-if exist "%~dp0CPP\7zip\Bundles\Format7zF\x64\7z.dll"  copy /y "%~dp0CPP\7zip\Bundles\Format7zF\x64\7z.dll"  "%OUT%\" >nul
-if exist "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        copy /y "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        "%OUT%\" >nul
-if exist "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           copy /y "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           "%OUT%\" >nul
-if exist "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      copy /y "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      "%OUT%\" >nul
-if exist "%~dp0CPP\7zip\UI\Explorer\x64\7-zip.dll"    copy /y "%~dp0CPP\7zip\UI\Explorer\x64\7-zip.dll"    "%OUT%\" >nul
+set "STAGEFAIL="
+call :stagecopy "%~dp0CPP\7zip\Bundles\Format7zF\x64\7z.dll"  "%OUT%\"
+call :stagecopy "%~dp0CPP\7zip\UI\Console\x64\7z.exe"        "%OUT%\"
+call :stagecopy "%~dp0CPP\7zip\UI\GUI\x64\7zG.exe"           "%OUT%\"
+call :stagecopy "%~dp0CPP\7zip\Bundles\Fm\x64\7zFM.exe"      "%OUT%\"
+call :stagecopy "%~dp0CPP\7zip\UI\Explorer\x64\7-zip.dll"    "%OUT%\"
 if not exist "%OUT%\Lang" mkdir "%OUT%\Lang"
 copy /y "%~dp0Custom\lang\*.txt" "%OUT%\Lang\" >nul
 copy /y "%~dp0Custom\tools\diagnose.bat" "%OUT%\diagnose.bat" >nul
 copy /y "%~dp0Custom\tools\run.bat" "%OUT%\run.bat" >nul
+if defined STAGEFAIL (
+    echo [FAIL] stage copy failed - close 7zFM/7zG/7z.exe/7z.dll users and rebuild
+    exit /b 1
+)
 echo [STAGE] output dir: %OUT%
+exit /b 0
+
+:stagecopy
+REM %1 = source, %2 = destination dir (with trailing backslash)
+if not exist "%~1" exit /b 0
+copy /y "%~1" "%~2" >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] cannot update "%~nx1" - file is running or locked
+    set "STAGEFAIL=1"
+)
 exit /b 0
 
 :build
