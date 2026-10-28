@@ -138,6 +138,11 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
      （竖线不支持 7z 解密，只能整包）。代价：显示第一张图，用户自己翻页
    - 7z 未加密 0.4 → 整包打开 2.5s 后补一发竖线（`WholeThenPipeThread`），
      精确定位到点击的图；竖线窗口确认出现后自动关掉整包窗口
+   - **嵌套归档（包中包）直接返回 0**：7zFM 用外层流打开内层包，`CFolderLink.FilePath`
+     只是“将来解压用”的临时路径，磁盘上不存在该文件（源码里 `IsVirtual = true`）。
+     `GetFileAttributesW` 判不存在即交回 7-Zip 原生打开流程（日志
+     `virtual archive, fallback to 7-Zip`），否则 Honeyview 会得到空路径，
+     表现为空视图 + “打开书签失败”。
 3. 没有 Honeyview / 原生启动失败 → 回退解压流程：
    - 临时目录按**归档路径**做哈希：`%TEMP%\7zip-custom\preview\<hash>\<归档内目录>`
      - 同一归档的所有目录共用一个根；归档关闭时整个根删除

@@ -580,6 +580,17 @@ extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePat
   if (!custom::IsImageFile(itemRelPath))
     return 0;
 
+  // 嵌套在别的压缩包里的归档：7zFM 用外层归档内的流打开它（CFolderLink.IsVirtual），
+  // CFolderLink.FilePath 只是个“将来解压用”的临时路径，磁盘上并没有这个文件。
+  // 7z.dll / Honeyview 都不可能打开它，继续走原生模式只会得到空窗口。
+  // 这里直接返回 0，交回 7-Zip 自己的打开流程（原版行为：解出所点的文件
+  // 再交给关联程序），不再是我们的看图流程。
+  if (::GetFileAttributesW(archivePath) == INVALID_FILE_ATTRIBUTES)
+  {
+    DebugLog(L"TryOpenImage.nested", L"(virtual archive, fallback to 7-Zip)");
+    return 0;
+  }
+
   // 7-Zip 只会把"对话框里输入的密码"存进 CFolderLink；如果密码是我们从库里
   // 直接喂给它的，CFolderLink.Password 就是空的。所以这里必须自己再查一次库，
   // 否则加密包会拿空密码去解，必然失败。
