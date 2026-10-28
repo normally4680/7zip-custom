@@ -687,18 +687,35 @@ Z7_COM7F_IMF(CExtractCallbackImp::CryptoGetTextPassword(BSTR *password))
 {
   PasswordWasAsked = true;
 
-  // ---- 7zip-custom: auto-fill password from vault ----
+  // ---- 7zip-custom: vault first, then OUR dialog (vault list + optional save) ----
+  // This is the path used when extracting a single file from an archive
+  // (opening an image/video with the stock flow, "extract to", drag&drop).
   if (!PasswordIsDefined && !_currentArchivePath.IsEmpty())
   {
-    wchar_t pwBuf[256];
-    if (CustomHook_TryPassword(_currentArchivePath, pwBuf, (int)(sizeof(pwBuf) / sizeof(pwBuf[0]))))
+    wchar_t pwBuf[1024];
+    const int cch = (int)(sizeof(pwBuf) / sizeof(pwBuf[0]));
+    if (CustomHook_TryPassword(_currentArchivePath, pwBuf, cch))
     {
       Password = pwBuf;
       PasswordIsDefined = true;
       return StringToBstr(Password, password);
     }
+
+    ProgressDialog->WaitCreating();
+    HWND progressOwner = *ProgressDialog;   // center the password dialog on the progress window
+    const int askRes = CustomHook_AskPassword((void *)progressOwner,
+                                              _currentArchivePath, pwBuf, cch);
+    if (askRes == 1)
+    {
+      Password = pwBuf;
+      PasswordIsDefined = true;
+      return StringToBstr(Password, password);
+    }
+    if (askRes < 0)
+      return E_ABORT;
+    // askRes == 0: our UI is unavailable -> fall through to the stock dialog
   }
-  // ------------------------------------
+  // ------------------------------------------------------------------
 
   if (!PasswordIsDefined)
   {
