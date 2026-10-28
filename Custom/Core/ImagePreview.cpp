@@ -754,6 +754,46 @@ std::wstring NormalizeInnerPath(const std::wstring &archivePath,
     inner = inner.substr(archivePath.size());
   while (!inner.empty() && (inner[0] == L'\\' || inner[0] == L'/'))
     inner.erase(inner.begin());
+
+  // 嵌套归档：外层包里的压缩包会被 7-Zip 解到临时目录再打开，面板传进来的
+  // 却是逻辑虚拟路径，两者前缀对不上（archivePath 是 C:\...\7zO...\x.zip，
+  // 路径是 D:\outer.7z\x.zip\sub\1.png）。剥离后仍带盘符就说明没对上，
+  // 这时用归档文件名在路径里找最后一个边界，取它后面的部分。
+  if (inner.find(L':') != std::wstring::npos)
+  {
+    const size_t slash = archivePath.find_last_of(L"\\/");
+    const std::wstring name = (slash == std::wstring::npos)
+        ? archivePath : archivePath.substr(slash + 1);
+    if (!name.empty())
+    {
+      std::wstring lowerInner = inner;
+      for (auto &c : lowerInner)
+        c = (wchar_t)::towlower(c);
+      std::wstring lowerName = name;
+      for (auto &c : lowerName)
+        c = (wchar_t)::towlower(c);
+
+      size_t best = std::wstring::npos;
+      size_t pos = 0;
+      while ((pos = lowerInner.find(lowerName, pos)) != std::wstring::npos)
+      {
+        const size_t end = pos + name.size();
+        // 必须是一个路径组件：前面是分隔符或开头，后面是分隔符
+        const bool leftOk = (pos == 0) || inner[pos - 1] == L'\\' || inner[pos - 1] == L'/';
+        const bool rightOk = (end < inner.size())
+            && (inner[end] == L'\\' || inner[end] == L'/');
+        if (leftOk && rightOk)
+          best = end;
+        pos = end;
+      }
+      if (best != std::wstring::npos)
+      {
+        inner = inner.substr(best);
+        while (!inner.empty() && (inner[0] == L'\\' || inner[0] == L'/'))
+          inner.erase(inner.begin());
+      }
+    }
+  }
   return inner;
 }
 
