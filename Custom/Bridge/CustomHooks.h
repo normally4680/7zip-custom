@@ -57,6 +57,19 @@ int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
                                             const wchar_t *itemRelPath,
                                             const wchar_t *password);
 
+// 嵌套归档（普通包里再套压缩包）的看图接管。
+//   outerArchivePath : 最外层真实归档路径（磁盘上存在）
+//   layerPaths       : 从外到内每一层归档的路径，用 '\n' 分隔（Windows 文件名不含换行）。
+//                      第一项是最外层；后面是 7-Zip 记录的临时路径，只用来按文件名查密码。
+//   itemRelPath      : 被点击条目的完整虚拟路径（只用来判断扩展名）
+// 7-Zip 自己无法把"包中包"的虚拟文件交给 Honeyview，但 Honeyview 整包打开
+// 外层归档时可以遍历嵌套包并逐层弹密码框；这里负责整包打开，并按层自动填密码，
+// 取不到或填错时弹本项目自己的密码框。
+// 返回 1 = 已接管；0 = 不接管（没有 Honeyview / 外层不是真实文件等），走原版流程。
+int CUSTOM_HOOK_API CustomHook_TryOpenNestedImage(const wchar_t *outerArchivePath,
+                                                  const wchar_t *layerPaths,
+                                                  const wchar_t *itemRelPath);
+
 // 7zG（独立的解压/压缩进程）用：在开始处理前记录当前归档路径，
 // 之后它的密码框就能查密码库。传 NULL 表示清空。
 void CUSTOM_HOOK_API CustomHook_SetCurrentArchive(const wchar_t *archivePath);

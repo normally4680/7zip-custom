@@ -25,6 +25,7 @@
 #include "../../CPP/Common/MyWindows.h"
 #include "../../CPP/Common/MyCom.h"
 #include "../../CPP/Common/MyVector.h"
+#include "../../CPP/Windows/PropVariant.h"
 
 namespace custom {
 
@@ -186,19 +187,24 @@ Z7_COM7F_IMF(CFileInStream::Seek(Int64 offset, UInt32 seekOrigin, UInt64 *newPos
 
 class COpenCallback Z7_final:
   public IArchiveOpenCallback,
+  public IArchiveOpenVolumeCallback,
   public ICryptoGetTextPassword,
   public ICryptoGetTextPassword2,
   public CMyUnknownImp
 {
 public:
-  Z7_COM_UNKNOWN_IMP_3(IArchiveOpenCallback, ICryptoGetTextPassword, ICryptoGetTextPassword2)
+  Z7_COM_UNKNOWN_IMP_4(IArchiveOpenCallback, IArchiveOpenVolumeCallback,
+                       ICryptoGetTextPassword, ICryptoGetTextPassword2)
   Z7_IFACE_COM7_IMP(IArchiveOpenCallback)
+  Z7_IFACE_COM7_IMP(IArchiveOpenVolumeCallback)
   Z7_IFACE_COM7_IMP(ICryptoGetTextPassword)
   Z7_IFACE_COM7_IMP(ICryptoGetTextPassword2)
 
 public:
   std::wstring Password;
   bool *PasswordRequested = nullptr;
+  std::wstring FolderPrefix;   // 归档所在目录（带尾部斜杠）
+  std::wstring FileName;       // 归档文件名（卷回调解析基准名用）
 };
 
 Z7_COM7F_IMF(COpenCallback::SetTotal(const UInt64 *, const UInt64 *)) { return S_OK; }
@@ -219,6 +225,46 @@ Z7_COM7F_IMF(COpenCallback::CryptoGetTextPassword2(Int32 *passwordIsDefined, BST
   if (passwordIsDefined)
     *passwordIsDefined = 1;
   return CryptoGetTextPassword(password);
+}
+
+// 分卷归档：7z.dll 通过这两个方法按名字来找其它卷（Desktop2.z01 等）。
+Z7_COM7F_IMF(COpenCallback::GetProperty(PROPID propID, PROPVARIANT *value))
+{
+  if (!value)
+    return E_INVALIDARG;
+  ::PropVariantInit(value);
+  if (propID == kpidName)
+  {
+    value->vt = VT_BSTR;
+    value->bstrVal = ::SysAllocString(FileName.c_str());
+    if (!value->bstrVal)
+      return E_OUTOFMEMORY;
+  }
+  return S_OK;
+}
+
+Z7_COM7F_IMF(COpenCallback::GetStream(const wchar_t *name, IInStream **inStream))
+{
+  if (!inStream)
+    return E_INVALIDARG;
+  *inStream = nullptr;
+  if (!name || !*name)
+    return S_FALSE;
+
+  std::wstring volume = name;
+  for (auto &c : volume)
+    if (c == L'/')
+      c = L'\\';
+  if (volume[0] == L'\\' || volume.find(L':') != std::wstring::npos ||
+      volume.find(L"..") != std::wstring::npos)
+    return S_FALSE;
+
+  CFileInStream *file = new CFileInStream;
+  CMyComPtr<IInStream> stream = file;
+  if (!file->Open(FolderPrefix + volume))
+    return S_FALSE;
+  *inStream = stream.Detach();
+  return S_OK;
 }
 
 // ------------------------------------------------------------------ 输出流
@@ -487,6 +533,16 @@ HRESULT TryOpenWithFormat(const SevenZipApi &api, UInt32 formatIndex,
   COpenCallback *cbSpec = (COpenCallback *)(IArchiveOpenCallback *)cb;
   cbSpec->Password = password;
   cbSpec->PasswordRequested = passwordRequested;
+  {
+    const size_t slash = archivePath.find_last_of(L"\\/");
+    if (slash == std::wstring::npos)
+      cbSpec->FileName = archivePath;
+    else
+    {
+      cbSpec->FolderPrefix = archivePath.substr(0, slash + 1);
+      cbSpec->FileName = archivePath.substr(slash + 1);
+    }
+  }
 
   const UInt64 scanSize = 1 << 23;
   const HRESULT openRes = archive->Open(stream, &scanSize, cb);

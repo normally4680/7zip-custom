@@ -382,6 +382,11 @@ Z7_COM7F_IMF(COpenCallbackImp::CryptoGetTextPassword(BSTR *password))
     hookPath = FileNames[0];
   else if (!_fileInfo.Name.IsEmpty())
     hookPath = fs2us(_folderPrefix + _fileInfo.Name);
+  else if (!_subArchiveName.IsEmpty())
+    // Nested archive opened from an outer stream: GetStream() is not used,
+    // so FileNames/_fileInfo stay empty. Without this the vault/dialog branch
+    // below is skipped and 7-Zip's own password box appears instead.
+    hookPath = _subArchiveName;
   const wchar_t *hookPathPtr = hookPath.IsEmpty() ? NULL : (const wchar_t *)hookPath;
   // -------------------------------------------------------------
 
