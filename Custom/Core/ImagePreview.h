@@ -11,6 +11,7 @@
 #define CUSTOM_IMAGE_PREVIEW_H
 
 #include <string>
+#include <vector>
 
 namespace custom {
 
@@ -66,6 +67,26 @@ bool LaunchHoneyviewArchive(const std::wstring &honeyviewExe,
 bool LaunchHoneyviewWholeArchive(const std::wstring &honeyviewExe,
                                  const std::wstring &archivePath,
                                  const std::wstring &password = std::wstring());
+
+// 嵌套归档用：整包打开后可能连续弹多个密码框（外层、内层…）。
+// passwords 按外→内排列，每个密码框消耗一个；框里已有内容时保留 Honeyview 的预填。
+// 需要密码但取不到时调用 askPassword（由 Bridge 层接到本项目自己的密码框）。
+struct NestedHoneyviewOptions
+{
+  std::vector<std::wstring> passwords;
+  // 与 passwords 一一对应的归档名（填错时用它的名字弹我们的密码框）
+  std::vector<std::wstring> passwordNames;
+  // 第一层（外层）可能加密但队列里没有它的密码：第一个空密码框先弹我们的框
+  bool firstPromptNeedsAsk = false;
+  std::wstring firstLayerName;
+  std::wstring fallbackName;
+  int (*askPassword)(void *owner, const wchar_t *archiveName,
+                     wchar_t *buf, int cch) = nullptr;
+};
+
+bool LaunchHoneyviewWholeArchiveMulti(const std::wstring &honeyviewExe,
+                                      const std::wstring &archivePath,
+                                      const NestedHoneyviewOptions &options);
 
 // 两步走：先整包打开（让 Honeyview 解析归档并进它的浏览历史），
 // 约 2.5s 后再补一发 "archive|inner" 切到用户点的那张图，成功后关掉

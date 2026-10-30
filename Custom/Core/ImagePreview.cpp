@@ -850,8 +850,29 @@ namespace {
 struct AutofillCtx
 {
   DWORD pid = 0;
-  std::wstring password;
+  std::wstring exe;
+  std::wstring archive;
+  std::vector<std::wstring> passwords;
+  std::vector<std::wstring> passwordNames;
+  size_t next = 0;
+  bool firstPrompt = true;
+  bool firstPromptNeedsAsk = false;
+  std::wstring firstLayerName;
+  std::wstring fallbackName;
+  int (*askPassword)(void *owner, const wchar_t *archiveName,
+                     wchar_t *buf, int cch) = nullptr;
+  int relaunches = 0;
 };
+
+void FreeAutofillCtx(AutofillCtx *c)
+{
+  if (!c)
+    return;
+  for (auto &p : c->passwords)
+    if (!p.empty())
+      ::SecureZeroMemory(&p[0], p.size() * sizeof(wchar_t));
+  delete c;
+}
 
 struct FindDlgCtx
 {
@@ -905,26 +926,287 @@ BOOL CALLBACK FindPasswordDlgProc(HWND h, LPARAM lp)
   return FALSE;
 }
 
-// 后台等 Honeyview 的密码框出现，自动填入密码并点确定；最多等 10 秒。
+// Honeyview 密码错误时弹的提示框：class #32770、没有 Edit、按钮 ID 101。
+struct ErrorDlgCtx { DWORD pid; HWND dlg; };
+
+BOOL CALLBACK FindErrorDlgProc(HWND h, LPARAM lp)
+{
+  ErrorDlgCtx *c = reinterpret_cast<ErrorDlgCtx *>(lp);
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(h, &pid);
+  if (pid != c->pid || !::IsWindowVisible(h))
+    return TRUE;
+  wchar_t cls[64] = {};
+  if (::GetClassNameW(h, cls, 64) == 0 || wcscmp(cls, L"#32770") != 0)
+    return TRUE;
+
+  bool flags[2] = { false, false };
+  ::EnumChildWindows(h, [](HWND ch, LPARAM p) -> BOOL {
+    bool *f = reinterpret_cast<bool *>(p);
+    wchar_t name[64] = {};
+    ::GetClassNameW(ch, name, 64);
+    if (_wcsicmp(name, L"Edit") == 0)
+      f[0] = true;
+    if (_wcsicmp(name, L"Button") == 0 && ::GetDlgCtrlID(ch) == 101)
+      f[1] = true;
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&flags));
+
+  if (!flags[0] && flags[1])
+  {
+    c->dlg = h;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+bool StartHoneyview(const std::wstring &honeyviewExe, const std::wstring &argQuoted,
+                    const std::wstring &archivePath, DWORD &pidOut);
+
+bool FindErrorDialog(DWORD pid, HWND &out)
+{
+  ErrorDlgCtx c = { pid, nullptr };
+  ::EnumWindows(FindErrorDlgProc, reinterpret_cast<LPARAM>(&c));
+  out = c.dlg;
+  return out != nullptr;
+}
+
+void DismissDialog(HWND dlg)
+{
+  ::PostMessageW(dlg, WM_COMMAND, (WPARAM)IDOK, 0);
+  ::Sleep(200);
+}
+
+
+// 找 Honeyview 主窗口，作为本项目密码框的 owner（居中/置前用）。
+HWND FindHoneyviewWindow(DWORD pid)
+{
+  struct Ctx { DWORD pid; HWND hwnd; } c = { pid, nullptr };
+  ::EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+    Ctx *x = reinterpret_cast<Ctx *>(lp);
+    DWORD p = 0;
+    ::GetWindowThreadProcessId(h, &p);
+    if (p != x->pid || !::IsWindowVisible(h))
+      return TRUE;
+    wchar_t cls[64] = {};
+    ::GetClassNameW(h, cls, 64);
+    if (wcscmp(cls, L"HoneyviewClassX") == 0)
+    {
+      x->hwnd = h;
+      return FALSE;
+    }
+    return TRUE;
+  }, reinterpret_cast<LPARAM>(&c));
+  return c.hwnd;
+}
+
+// 后台逐个处理 Honeyview 的密码框（嵌套包会连续弹多层）：
+//   * 队列里有密码 -> 写入（覆盖 Honeyview 可能过期的预填）
+//   * 队列空了但框里有预填 -> 保留预填，直接确定
+//   * 空框且没有可填密码 -> 弹本项目自己的密码框
+// 每个框先等 300ms 让控件就绪；连续 15 秒没有新框就结束。
 DWORD WINAPI AutofillThread(LPVOID param)
 {
   AutofillCtx *c = reinterpret_cast<AutofillCtx *>(param);
-  for (int i = 0; i < 200; ++i)
+  ULONGLONG start = ::GetTickCount64();
+  int idle = 0;
+  HWND lastDlg = nullptr;
+  int sameDlg = 0;
+  std::wstring lastPassword;   // 最近一次成功提交的密码（Honeyview 重复弹框时复用）
+
+
+  while (::GetTickCount64() - start < 60000)
   {
     FindDlgCtx fc;
     fc.pid = c->pid;
     ::EnumWindows(FindPasswordDlgProc, reinterpret_cast<LPARAM>(&fc));
-    if (fc.dlg && fc.edit && fc.button)
+    if (!fc.dlg || !fc.edit || !fc.button)
     {
-      ::SendMessageW(fc.edit, WM_SETTEXT, 0, (LPARAM)c->password.c_str());
-      ::SendMessageW(fc.button, BM_CLICK, 0, 0);
-      break;
+      ::Sleep(50);
+      if (++idle > 300)   // 15 秒没有新密码框就算结束（冷启动解析可能较慢）
+        break;
+      continue;
     }
-    ::Sleep(50);
+    idle = 0;
+
+    // 密码框刚建好时内部状态还没就绪，马上输入会被当成空密码。
+    ::Sleep(300);
+
+    if (fc.dlg == lastDlg)
+    {
+      if (++sameDlg > 3)   // 点了确定框还不消失，别死循环
+        break;
+    }
+    else
+    {
+      lastDlg = fc.dlg;
+      sameDlg = 0;
+    }
+
+    wchar_t cur[512] = {};
+    ::GetWindowTextW(fc.edit, cur, (int)(sizeof(cur) / sizeof(cur[0])));
+    const bool prefilled = (cur[0] != 0);
+
+    std::wstring fill;
+    bool needAsk = false;
+    std::wstring askName;
+    int consumedIndex = -1;
+    const bool wasFirstPrompt = c->firstPrompt;
+
+    if (c->firstPrompt && c->firstPromptNeedsAsk)
+    {
+      // 外层可能加密但队列里没有它的密码：预填内容留给 Honeyview，
+      // 空框则先弹我们自己的密码框；这一框不消耗内层密码。
+      if (!prefilled)
+      {
+        needAsk = true;
+        askName = c->firstLayerName;
+      }
+    }
+    else if (c->next < c->passwords.size())
+    {
+      // 有按层排好的密码就直接写入（覆盖 Honeyview 可能过期的预填）
+      consumedIndex = (int)c->next;
+      fill = c->passwords[c->next++];
+    }
+    else if (!prefilled)
+    {
+      // 队列用完了：Honeyview 可能对同一层再弹一次，先复用上次成功的密码；
+      // 不同层且密码不同时会被 Honeyview 拒绝，再走错误恢复流程。
+      if (!lastPassword.empty())
+        fill = lastPassword;
+      else
+      {
+        needAsk = true;
+        askName = c->fallbackName;
+      }
+    }
+
+    if (needAsk)
+    {
+      if (!c->askPassword)
+        break;
+      wchar_t buf[1024] = {};
+      // 以 Honeyview 的密码框本身做 owner：不要禁用主窗口，否则它的
+      // 模态密码框可能被重置/重新弹出。
+      const int r = c->askPassword(fc.dlg,
+                                   askName.empty() ? L"嵌套压缩包" : askName.c_str(),
+                                   buf, (int)(sizeof(buf) / sizeof(buf[0])));
+      if (r == 1 && buf[0])
+        fill = buf;
+      ::SecureZeroMemory(buf, sizeof(buf));
+      if (fill.empty())
+        break;   // 用户取消：把 Honeyview 的框留在那里让用户自己输入
+    }
+
+    if (!fill.empty())
+    {
+      // 用 WM_CHAR 逐字输入：Honeyview 的密码框有内部状态，跨进程直接
+      // WM_SETTEXT 有时只改了显示文本、按确定仍被当成空密码。
+      ::SendMessageW(fc.edit, EM_SETSEL, 0, -1);
+      ::SendMessageW(fc.edit, WM_CLEAR, 0, 0);
+      for (const wchar_t ch : fill)
+        ::SendMessageW(fc.edit, WM_CHAR, (WPARAM)ch, 0);
+      ::Sleep(100);
+    }
+    if (!fill.empty())
+      lastPassword = fill;
+    else if (prefilled)
+      lastPassword = cur;
+    ::SendMessageW(fc.button, BM_CLICK, 0, 0);
+    c->firstPrompt = false;
+
+    // 等这个框关掉，再继续等下一层
+    for (int k = 0; k < 60; ++k)
+    {
+      ::Sleep(50);
+      if (!::IsWindowVisible(fc.dlg))
+        break;
+    }
+
+    // 自动填的密码被 Honeyview 拒绝：关掉错误框，用我们的密码框重新问这一层，
+    // 然后重启 Honeyview（错误框关掉后这个实例就废了）。
+    // 错误框通常比密码框晚几十毫秒出现；最多等 1.5 秒，下一层密码框出现就提前结束。
+    HWND errDlg = nullptr;
+    for (int k = 0; k < 30; ++k)
+    {
+      if (FindErrorDialog(c->pid, errDlg))
+        break;
+      FindDlgCtx nextDlg;
+      nextDlg.pid = c->pid;
+      ::EnumWindows(FindPasswordDlgProc, reinterpret_cast<LPARAM>(&nextDlg));
+      if (nextDlg.dlg && nextDlg.dlg != fc.dlg)
+        break;
+      ::Sleep(50);
+    }
+    if (errDlg)
+    {
+      DismissDialog(errDlg);
+      if (c->relaunches >= 2 || c->exe.empty() || !c->askPassword)
+        break;
+
+      std::wstring name = askName.empty() ? c->fallbackName : askName;
+      if (consumedIndex >= 0 &&
+          (size_t)consumedIndex < c->passwordNames.size() &&
+          !c->passwordNames[(size_t)consumedIndex].empty())
+        name = c->passwordNames[(size_t)consumedIndex];
+      if (wasFirstPrompt && consumedIndex < 0)
+        name = c->firstLayerName;
+
+      HWND hvWnd = FindHoneyviewWindow(c->pid);
+      ::MessageBoxW(hvWnd, L"密码错误，请重新输入。", L"密码错误",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+
+      wchar_t buf[1024] = {};
+      const int r = c->askPassword(hvWnd,
+                                   name.empty() ? L"嵌套压缩包" : name.c_str(),
+                                   buf, (int)(sizeof(buf) / sizeof(buf[0])));
+      if (r != 1 || !buf[0])
+      {
+        ::SecureZeroMemory(buf, sizeof(buf));
+        break;
+      }
+
+      if (consumedIndex >= 0)
+        c->passwords[(size_t)consumedIndex] = buf;
+      else if (wasFirstPrompt)
+      {
+        // 外层密码填错：插到队列最前面，重启后先填外层
+        c->passwords.insert(c->passwords.begin(), buf);
+        c->passwordNames.insert(c->passwordNames.begin(), c->firstLayerName);
+        c->firstPromptNeedsAsk = false;
+      }
+      else
+      {
+        c->passwords.push_back(buf);
+        c->passwordNames.push_back(name);
+      }
+      ::SecureZeroMemory(buf, sizeof(buf));
+
+      HANDLE ph = ::OpenProcess(PROCESS_TERMINATE, FALSE, c->pid);
+      if (ph)
+      {
+        ::TerminateProcess(ph, 0);
+        ::CloseHandle(ph);
+      }
+      ::Sleep(300);
+
+      DWORD newPid = 0;
+      if (!StartHoneyview(c->exe, L"\"" + c->archive + L"\"", c->archive, newPid))
+        break;
+      c->pid = newPid;
+      c->next = 0;
+      c->firstPrompt = true;
+      lastPassword.clear();
+      ++c->relaunches;
+      lastDlg = nullptr;
+      sameDlg = 0;
+      idle = 0;
+      start = ::GetTickCount64();
+    }
   }
-  if (!c->password.empty())
-    ::SecureZeroMemory(&c->password[0], c->password.size() * sizeof(wchar_t));
-  delete c;
+
+  FreeAutofillCtx(c);
   return 0;
 }
 
@@ -955,15 +1237,34 @@ void StartAutofill(DWORD pid, const std::wstring &password)
 {
   AutofillCtx *ctx = new AutofillCtx;
   ctx->pid = pid;
-  ctx->password = password;
+  if (!password.empty())
+    ctx->passwords.push_back(password);
   HANDLE th = ::CreateThread(nullptr, 0, AutofillThread, ctx, 0, nullptr);
   if (th)
     ::CloseHandle(th);
   else
-  {
-    ::SecureZeroMemory(&ctx->password[0], ctx->password.size() * sizeof(wchar_t));
-    delete ctx;
-  }
+    FreeAutofillCtx(ctx);
+}
+
+void StartAutofillMulti(DWORD pid, const std::wstring &honeyviewExe,
+                        const std::wstring &archivePath,
+                        const NestedHoneyviewOptions &options)
+{
+  AutofillCtx *ctx = new AutofillCtx;
+  ctx->pid = pid;
+  ctx->exe = honeyviewExe;
+  ctx->archive = archivePath;
+  ctx->passwords = options.passwords;
+  ctx->passwordNames = options.passwordNames;
+  ctx->firstPromptNeedsAsk = options.firstPromptNeedsAsk;
+  ctx->firstLayerName = options.firstLayerName;
+  ctx->fallbackName = options.fallbackName;
+  ctx->askPassword = options.askPassword;
+  HANDLE th = ::CreateThread(nullptr, 0, AutofillThread, ctx, 0, nullptr);
+  if (th)
+    ::CloseHandle(th);
+  else
+    FreeAutofillCtx(ctx);
 }
 
 // pid 的可见顶层窗口里是否有标题含 sub 的（用来确认竖线窗口真开出来了）
@@ -1096,6 +1397,22 @@ bool LaunchHoneyviewWholeArchive(const std::wstring &honeyviewExe,
 
   if (!password.empty())
     StartAutofill(pid, password);
+  return true;
+}
+
+bool LaunchHoneyviewWholeArchiveMulti(const std::wstring &honeyviewExe,
+                                      const std::wstring &archivePath,
+                                      const NestedHoneyviewOptions &options)
+{
+  if (honeyviewExe.empty() || archivePath.empty())
+    return false;
+
+  DWORD pid = 0;
+  if (!StartHoneyview(honeyviewExe, L"\"" + archivePath + L"\"", archivePath, pid))
+    return false;
+
+  if (!options.passwords.empty() || options.askPassword)
+    StartAutofillMulti(pid, honeyviewExe, archivePath, options);
   return true;
 }
 
