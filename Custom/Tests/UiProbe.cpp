@@ -160,7 +160,7 @@ int wmain(int argc, wchar_t **argv)
     printf("附加功能子菜单 %d 项：\n", n);
     for (int i = 0; i < n; ++i)
       printf("    - %s\n", Utf8(MenuText(sub, i)).c_str());
-    Check(n == 4, "附加功能子菜单 4 项（注册/取消/分隔线/程序目录）");
+    Check(n == 6, "附加功能子菜单 6 项（注册/取消/居中/程序目录）");
   }
 
   // 幂等：再调一次不应该出现第二个"密码库"
