@@ -337,10 +337,10 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
   ```bash
   git fetch upstream --tags
   git switch -c upgrade/26.05 main
-  git rebase --onto 26.05 9128b80 upgrade/26.05
+  git rebase --onto 26.05 b88c6bc upgrade/26.05
   ```
 
-  `9128b80` 是当前基线（上游 26.04）。冲突只会出现在我们改过的少数
+  `b88c6bc` 是当前基线（上游 26.05）。冲突只会出现在我们改过的少数
   `CPP/` 注入点；`Custom/` 整目录通常原样保留。完成后跑
   `build-msvc.bat` + `VaultTest` / `PreviewTest`，再合回 `main`。
 - 不建议为了“两条分支完全独立”重写历史：两个功能共享 hook 和密码流程，
