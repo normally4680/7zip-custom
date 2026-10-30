@@ -4,6 +4,7 @@
 // 用法：PreviewTest.exe <归档路径> <归档内相对路径> [密码]
 
 #include "../Core/ImagePreview.h"
+#include "../Core/PasswordVault.h"
 #include "../Core/SevenZipInProc.h"
 #include "../Core/ShellIntegration.h"
 
@@ -11,6 +12,9 @@
 extern "C" int __cdecl CustomHook_TryOpenImage(const wchar_t *archivePath,
                                                const wchar_t *itemRelPath,
                                                const wchar_t *password);
+extern "C" int __cdecl CustomHook_TryOpenNestedImage(const wchar_t *outerArchivePath,
+                                                     const wchar_t *layerPaths,
+                                                     const wchar_t *itemRelPath);
 extern "C" void __cdecl CustomHook_OnArchiveClosed(const wchar_t *archivePath);
 
 #include <windows.h>
@@ -105,6 +109,81 @@ int wmain(int argc, wchar_t **argv)
     const bool known = custom::ArchiveTryPassword(L"7z.dll", argv[2], argv[3], argv[4], ok);
     printf("known=%d verified=%d\n", (int)known, (int)ok);
     return !known ? 1 : (ok ? 0 : 2);
+  }
+
+  // 测试用：列出当前密码库条目名（不打印密码）
+  if (wcscmp(argv[1], L"--vault-list") == 0)
+  {
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    vault.Load(false);
+    printf("vault entries: %d\n", (int)vault.Entries().size());
+    for (const auto &e : vault.Entries())
+      printf("  %s\n", Utf8(e.name).c_str());
+    return 0;
+  }
+
+  // 测试用：把某条目的密码复制到另一个条目名下（不打印密码）
+  if (wcscmp(argv[1], L"--vault-copy") == 0 && argc >= 4)
+  {
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    vault.Load(false);
+    std::wstring pwd;
+    if (!vault.FindForArchive(argv[2], pwd) || pwd.empty())
+    {
+      printf("source not found\n");
+      return 1;
+    }
+    const bool ok = vault.Remember(argv[3], pwd);
+    ::SecureZeroMemory(&pwd[0], pwd.size() * sizeof(wchar_t));
+    printf("copy %s -> %s: %d\n", Utf8(argv[2]).c_str(), Utf8(argv[3]).c_str(), (int)ok);
+    return ok ? 0 : 1;
+  }
+
+  // 测试用：把条目写进当前程序使用的密码库（便于验证嵌套包按文件名查库）
+  if (wcscmp(argv[1], L"--vault-remember") == 0 && argc >= 4)
+  {
+    custom::PasswordVault &vault = custom::PasswordVault::Instance();
+    vault.Load(false);
+    const bool ok = vault.Remember(argv[2], argv[3]);
+    printf("vault remember %s: %d\n", Utf8(argv[2]).c_str(), (int)ok);
+    return ok ? 0 : 1;
+  }
+
+  // 嵌套包：外层真实归档 + 各内层路径 + 被点条目的虚拟路径
+  // 用法：PreviewTest.exe --nested <outer> <virtual-item> <inner1> [inner2 ...]
+  // 密码由 hook 自己从会话缓存/密码库按层解析；取不到时会弹本项目密码框。
+  if (wcscmp(argv[1], L"--nested") == 0 && argc >= 4)
+  {
+    std::wstring layers = argv[2];
+    for (int i = 4; i < argc; ++i)
+    {
+      layers += L'\n';
+      layers += argv[i];
+    }
+
+    // 模拟 7zFM 主窗口：真实调用发生在 7zFM UI 线程上，预问密码框以它为 owner。
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = ::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = L"7-Zip::FM";
+    ::RegisterClassExW(&wc);
+    HWND testOwner = ::CreateWindowExW(0, L"7-Zip::FM", L"PreviewTest",
+                                       WS_OVERLAPPEDWINDOW, 100, 100, 480, 320,
+                                       nullptr, nullptr, wc.hInstance, nullptr);
+    if (testOwner)
+    {
+      ::ShowWindow(testOwner, SW_SHOWNOACTIVATE);
+      ::SetActiveWindow(testOwner);
+    }
+
+    const int r = CustomHook_TryOpenNestedImage(argv[2], layers.c_str(), argv[3]);
+    printf("nested hook returned %d (%s)\n", r, r == 1 ? "handled" : "fallback");
+    if (r == 1)
+      ::Sleep(120000);
+    if (testOwner)
+      ::DestroyWindow(testOwner);
+    return r == 1 ? 0 : 1;
   }
 
   // 直接走 Honeyview 原生路径（不解压）；可选密码会后台自动填入密码框

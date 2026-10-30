@@ -1504,6 +1504,31 @@ void CPanel::OpenItemInArchive(unsigned index, bool tryInternal, bool tryExterna
   // to the associated viewer, so wheel navigation walks the sibling files.
   if (tryExternal && !editMode && !_parentFolders.IsEmpty())
   {
+    // Nested archive (an archive inside another): the inner archives only
+    // exist as streams, so their FilePath values are future temp paths that
+    // are not on disk yet. Honeyview can still traverse them when we hand it
+    // the real outer archive. Handled separately before the normal preview path.
+    if (_parentFolders.Size() >= 2)
+    {
+      const CFolderLink &outerLink = _parentFolders[0];
+      if (!outerLink.FilePath.IsEmpty())
+      {
+        // Pass every layer (outer -> inner) so the hook can fill one password
+        // per Honeyview prompt. '\n' is safe: Windows file names cannot contain it.
+        UString layerPaths;
+        FOR_VECTOR (i, _parentFolders)
+        {
+          if (i != 0)
+            layerPaths.Add_LF();
+          layerPaths += fs2us(_parentFolders[i].FilePath);
+        }
+        const UString outerArcPath = fs2us(outerLink.FilePath);
+        const UString virtPath = _currentFolderPrefix + relPath;
+        if (CustomHook_TryOpenNestedImage(outerArcPath, layerPaths, virtPath))
+          return;
+      }
+    }
+
     const CFolderLink &fl = _parentFolders.Back();
     if (!fl.FilePath.IsEmpty())
     {

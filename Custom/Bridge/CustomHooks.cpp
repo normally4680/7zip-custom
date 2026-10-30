@@ -571,6 +571,238 @@ extern "C" void CUSTOM_HOOK_API CustomHook_OnPasswordAccepted(const wchar_t *arc
   ::ReleaseSRWLockExclusive(&g_lock);
 }
 
+namespace {
+
+std::wstring BaseNameOfPath(const std::wstring &path)
+{
+  const size_t slash = path.find_last_of(L"\\/");
+  return (slash == std::wstring::npos) ? path : path.substr(slash + 1);
+}
+
+// Honeyview 进嵌套包靠后缀识别；改了后缀的包（如 xxx.zip删除我）它打不开。
+// 这类包交回 7-Zip 原流程（它能按内容识别），点哪张解哪张。
+bool IsHoneyviewKnownArchive(const std::wstring &path)
+{
+  const std::wstring name = BaseNameOfPath(path);
+  const size_t dot = name.find_last_of(L'.');
+  if (dot == std::wstring::npos || dot + 1 >= name.size())
+    return false;
+
+  std::wstring ext = name.substr(dot + 1);
+  for (auto &c : ext)
+    c = (wchar_t)::towlower(c);
+
+  static const wchar_t *const kExts[] = {
+    L"zip", L"7z", L"rar", L"alz", L"egg", L"tar",
+    L"gz", L"tgz", L"bz2", L"tbz", L"tbz2", L"xz", L"txz",
+    L"z", L"taz", L"lzh", L"lha", L"arj", L"cab", L"iso", L"wim",
+    L"cbz", L"cbr", L"cb7"
+  };
+  for (const wchar_t *known : kExts)
+    if (ext == known)
+      return true;
+  return false;
+}
+
+// 每一层归档的密码：先查会话缓存（完整路径、再文件名），最后按文件名查密码库。
+std::wstring ResolveLayerPassword(const std::wstring &path)
+{
+  std::wstring pwd;
+  if (path.empty())
+    return pwd;
+
+  if (RecallPassword(path.c_str(), pwd))
+    return pwd;
+
+  const std::wstring base = BaseNameOfPath(path);
+  if (!base.empty() && base != path && RecallPassword(base.c_str(), pwd))
+    return pwd;
+
+  ::AcquireSRWLockExclusive(&g_lock);
+  custom::PasswordVault &vault = custom::PasswordVault::Instance();
+  if (vault.Load(false))
+    vault.FindForArchive(path, pwd);
+  ::ReleaseSRWLockExclusive(&g_lock);
+  return pwd;
+}
+
+int NestedAskPasswordThunk(void *owner, const wchar_t *name, wchar_t *buf, int cch)
+{
+  return CustomHook_AskPassword(owner, name, buf, cch);
+}
+
+} // namespace
+
+extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenNestedImage(
+    const wchar_t *outerArchivePath,
+    const wchar_t *layerPaths,
+    const wchar_t *itemRelPath)
+{
+  if (!outerArchivePath || !*outerArchivePath || !itemRelPath || !*itemRelPath)
+    return 0;
+  if (!custom::IsImageFile(itemRelPath))
+    return 0;
+
+  // 外层必须是磁盘上真实存在的归档：Honeyview 要靠它自己遍历嵌套包。
+  if (::GetFileAttributesW(outerArchivePath) == INVALID_FILE_ATTRIBUTES)
+    return 0;
+
+  const std::wstring hv = custom::FindHoneyview();
+  if (hv.empty())
+    return 0;
+
+  std::vector<std::wstring> layers;
+  layers.push_back(outerArchivePath);            // layers[0] = 最外层
+  if (layerPaths && *layerPaths)
+  {
+    const wchar_t *p = layerPaths;
+    std::wstring first;
+    while (true)
+    {
+      const wchar_t *q = ::wcschr(p, L'\n');
+      std::wstring s = q ? std::wstring(p, (size_t)(q - p)) : std::wstring(p);
+      if (!s.empty() && s.back() == L'\r')
+        s.pop_back();
+      if (first.empty())
+        first = s;
+      else if (!s.empty())
+        layers.push_back(s);
+      if (!q)
+        break;
+      p = q + 1;
+    }
+    // 调用方传的第一项就是外层；万一不是，以显式参数为准
+    if (!first.empty() && _wcsicmp(first.c_str(), outerArchivePath) != 0)
+      layers.insert(layers.begin() + 1, first);
+  }
+
+  // Honeyview 靠后缀识别嵌套包；任何一层改了后缀（7-Zip 能按内容识别、
+  // Honeyview 不认）就交回 7-Zip 原流程：用户照常进入该层，点哪张解哪张。
+  for (size_t i = 0; i < layers.size(); ++i)
+  {
+    if (layers[i].empty())
+      continue;
+    if (!IsHoneyviewKnownArchive(layers[i]))
+    {
+      std::wstring detail = L"(unknown layer ext, fallback): " + BaseNameOfPath(layers[i]);
+      DebugLog(L"TryOpenImage.nested", detail.c_str());
+      return 0;
+    }
+  }
+
+  // 外层是不是加密的：已知未加密时，队列里不放外层密码
+  bool outerKnown = false;
+  bool outerEncrypted = false;
+  const std::wstring dll = ModuleDir() + L"7z.dll";
+  outerKnown = custom::ArchiveIsEncrypted(dll.c_str(), outerArchivePath, outerEncrypted);
+  const bool outerPlain = outerKnown && !outerEncrypted;
+
+  custom::NestedHoneyviewOptions opt;
+
+  std::wstring outerPwd;
+  if (!outerPlain)
+    outerPwd = ResolveLayerPassword(outerArchivePath);
+
+  // 有外层密码时先验证一次：分卷包现在也能在进程内打开/试解，
+  // 密码库里的旧密码不对就丢掉，改走下面的手输流程。
+  if (!outerPwd.empty() && outerKnown)
+  {
+    bool verified = false;
+    custom::ArchiveTryPassword(dll.c_str(), outerArchivePath, std::wstring(),
+                               outerPwd, verified);
+    if (!verified)
+      outerPwd.clear();
+  }
+  if (!outerPwd.empty())
+  {
+    opt.passwords.push_back(outerPwd);
+    opt.passwordNames.push_back(BaseNameOfPath(outerArchivePath));
+  }
+
+  for (size_t i = 1; i < layers.size(); ++i)
+  {
+    const std::wstring p = ResolveLayerPassword(layers[i]);
+    if (!p.empty())
+    {
+      opt.passwords.push_back(p);
+      opt.passwordNames.push_back(BaseNameOfPath(layers[i]));
+    }
+  }
+
+  // 外层可能加密却没有密码：第一个空密码框先弹我们自己的框。
+  // 密码库/缓存有外层密码时就不会走到这里。
+  opt.firstPromptNeedsAsk = (!outerPlain && outerPwd.empty());
+  opt.firstLayerName = BaseNameOfPath(outerArchivePath);
+  for (size_t i = layers.size(); i-- > 1;)
+  {
+    if (!layers[i].empty())
+    {
+      opt.fallbackName = BaseNameOfPath(layers[i]);
+      break;
+    }
+  }
+  if (opt.fallbackName.empty())
+    opt.fallbackName = opt.firstLayerName;
+  opt.askPassword = NestedAskPasswordThunk;
+
+  // 外层可能加密但密码库/缓存里没有：在启动 Honeyview 之前先问，
+  // 避免 Honeyview 已经打开、卡在密码框上之后再弹我们的框造成长时间停顿。
+  if (opt.firstPromptNeedsAsk)
+  {
+    void *owner = ::GetActiveWindow();
+    if (!owner)
+      owner = ::FindWindowW(L"7-Zip::FM", nullptr);
+    if (!owner)
+      owner = ::GetForegroundWindow();
+
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+      wchar_t buf[1024] = {};
+      const int r = CustomHook_AskPassword(owner, outerArchivePath,
+                                           buf, (int)(sizeof(buf) / sizeof(buf[0])));
+      if (r != 1 || !buf[0])
+      {
+        ::SecureZeroMemory(buf, sizeof(buf));
+        break;
+      }
+
+      // 能在进程内试解就先验证；密码不对直接提示重输，不把错误密码交给 Honeyview。
+      if (outerKnown)
+      {
+        bool verified = false;
+        custom::ArchiveTryPassword(dll.c_str(), outerArchivePath, std::wstring(),
+                                   buf, verified);
+        if (!verified)
+        {
+          ::MessageBoxW((HWND)owner, L"密码错误，请重新输入。", L"密码错误",
+                        MB_OK | MB_ICONWARNING);
+          ::SecureZeroMemory(buf, sizeof(buf));
+          continue;
+        }
+      }
+
+      opt.passwords.insert(opt.passwords.begin(), buf);
+      opt.passwordNames.insert(opt.passwordNames.begin(), opt.firstLayerName);
+      opt.firstPromptNeedsAsk = false;
+      ::SecureZeroMemory(buf, sizeof(buf));
+      break;
+    }
+  }
+
+  if (!custom::LaunchHoneyviewWholeArchiveMulti(hv, outerArchivePath, opt))
+  {
+    DebugLog(L"TryOpenImage.nested", L"(whole launch failed, fallback)");
+    return 0;
+  }
+
+  wchar_t detail[160] = {};
+  ::swprintf_s(detail, L"(layers=%u, passwords=%u, outerAsk=%d)",
+               (unsigned)layers.size(), (unsigned)opt.passwords.size(),
+               opt.firstPromptNeedsAsk ? 1 : 0);
+  DebugLog(L"TryOpenImage.nested", detail);
+  return 1;
+}
+
 extern "C" int CUSTOM_HOOK_API CustomHook_TryOpenImage(const wchar_t *archivePath,
                                                        const wchar_t *itemRelPath,
                                                        const wchar_t *password)

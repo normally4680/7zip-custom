@@ -138,11 +138,32 @@ hook 每次命中/未命中都会记一行，这是排查"到底有没有进我�
      （竖线不支持 7z 解密，只能整包）。代价：显示第一张图，用户自己翻页
    - 7z 未加密 0.4 → 整包打开 2.5s 后补一发竖线（`WholeThenPipeThread`），
      精确定位到点击的图；竖线窗口确认出现后自动关掉整包窗口
-   - **嵌套归档（包中包）直接返回 0**：7zFM 用外层流打开内层包，`CFolderLink.FilePath`
+   - **嵌套归档（包中包）走单独入口**：7zFM 用外层流打开内层包，`CFolderLink.FilePath`
      只是“将来解压用”的临时路径，磁盘上不存在该文件（源码里 `IsVirtual = true`）。
-     `GetFileAttributesW` 判不存在即交回 7-Zip 原生打开流程（日志
-     `virtual archive, fallback to 7-Zip`），否则 Honeyview 会得到空路径，
-     表现为空视图 + “打开书签失败”。
+     `CPanel::OpenItemInArchive` 检测到 `_parentFolders` 有两层以上时调用
+     `CustomHook_TryOpenNestedImage(最外层真实归档, 逐层归档路径, 虚拟路径)`：
+     Honeyview 整包打开**最外层真实归档**后能自己遍历嵌套包（实测 5.53：标题显示
+     `outer.7z?inner.zip > 1.png [1/3]`，滚轮可翻页，全程不解压）。
+     - 逐层路径用 `\n` 分隔（Windows 文件名不允许换行），hook 按外层→内层顺序
+       从 `CFolderLink`/会话缓存/密码库解析每层密码；Honeyview 每弹一个密码框填
+       一个，框里已有 Honeyview 预填内容时保留不覆盖
+     - 外层密码在启动 Honeyview **之前**解析：没有就弹本项目密码框，并用
+       `ArchiveTryPassword` 先试解验证（分卷 zip 通过 `IArchiveOpenVolumeCallback`
+       支持），密码错误立即 MessageBox 提示重输，不会把错误密码交给 Honeyview
+     - 某一层取不到密码 → 弹本项目密码框（带密码库）输入；Honeyview 报
+       “错误的口令”时关掉错误框，重新问这一层，并用新密码重启 Honeyview 重试
+       （最多 2 次）；Honeyview 对同一层重复弹框时复用上一次成功的密码
+     - 外层是否加密先由 `ArchiveIsEncrypted` 判断；判断不了且没有外层密码时，
+       第一个空密码框会先弹本项目的框，不会把内层密码填进外层
+     - 代价：Honeyview 只认“打开到这个内层包”，不能定位到点击的那张，固定从
+       第一张开始翻
+     - 没有 Honeyview、最外层不是真实文件或整包启动失败 → 返回 0，交回 7-Zip
+       原生打开流程（日志 `TryOpenImage.nested`）；此时旧代码的
+       `virtual archive, fallback to 7-Zip` 仍作为最后兜底
+     - **改过后缀的包**：7-Zip 能按内容识别、Honeyview 只认扩展名。hook 先检查
+       每一层的后缀（`IsHoneyviewKnownArchive`），任意一层不是 Honeyview 认识的
+       归档格式（如 `xxx.zip删除我`）就直接返回 0，交回 7-Zip 原流程：用户照常
+       进入该层，点哪张解哪张，密码仍由本项目的解压密码框处理
 3. 没有 Honeyview / 原生启动失败 → 回退解压流程：
    - 临时目录按**归档路径**做哈希：`%TEMP%\7zip-custom\preview\<hash>\<归档内目录>`
      - 同一归档的所有目录共用一个根；归档关闭时整个根删除
