@@ -332,15 +332,15 @@ cd _out\x64 && ./VaultTest.exe     # 需要在可写的当前目录下运行
 - `feature/custom-features`：附加功能分支，包含密码库 + 无缝看图，当前与 main 同步。
   以后有新的附加功能在这里开发，稳定后合回 main。原来的
   `feature/password-vault` 和 `feature/image-preview` 已合并删除，提交历史仍保留在 main 中。
-- 上游升级（以 26.05 为例）：
+- 上游升级（以 26.06 为例）：
 
   ```bash
   git fetch upstream --tags
-  git switch -c upgrade/26.05 main
-  git rebase --onto 26.05 b88c6bc upgrade/26.05
+  git switch -c upgrade/26.06 main
+  git rebase --onto 26.06 d3296e3 upgrade/26.06
   ```
 
-  `b88c6bc` 是当前基线（上游 26.05）。冲突只会出现在我们改过的少数
+  `d3296e3` 是当前基线（上游 26.06）。冲突只会出现在我们改过的少数
   `CPP/` 注入点；`Custom/` 整目录通常原样保留。完成后跑
   `build-msvc.bat` + `VaultTest` / `PreviewTest`，再合回 `main`。
 - 不建议为了“两条分支完全独立”重写历史：两个功能共享 hook 和密码流程，
